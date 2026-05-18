@@ -1340,6 +1340,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const [showVal,setShowVal]=useState(false);
   const [submitted,setSubmitted]=useState(false);
   const [score,setScore]=useState(null);
+  const [lightbox,setLightbox]=useState(null);
   // Ref to prevent concurrent ensureTask calls
   const creatingTask = useRef({});
 
@@ -1498,7 +1499,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   if (!cur) return <div style={{padding:40,textAlign:"center",color:"var(--text3)"}}>No items found in this contest.</div>;
 
   const di=cur.domain_items; const did=di?.domains?.id; const af=fields[did]||[];
-  const aa=(di?.attributes_for_category||"").split(",").map(s=>s.trim()).filter(Boolean);
+  const aa=(di?.attributes_for_category||"").split(/,\s*/).map(s=>s.trim()).filter(Boolean);
   const task=tasks[cur.id]; const ta=answers[task?.id]||{}; const isSub=task?.status==="submitted";
   const ctx=af.filter(f=>f.field_role==="context"&&(aa.length===0||aa.includes(f.field_name)));
   const imgs=af.filter(f=>f.field_role==="image");
@@ -1509,6 +1510,13 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
   return (
     <div style={{display:"flex",height:"100vh",overflow:"hidden",background:"var(--bg)"}}>
+      {/* Lightbox — outside scroll area so it covers full screen */}
+      {lightbox&&(
+        <div onClick={()=>setLightbox(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.9)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:3000,cursor:"zoom-out"}}>
+          <img src={lightbox} alt="" style={{maxWidth:"92vw",maxHeight:"92vh",objectFit:"contain",borderRadius:"var(--r)",boxShadow:"0 8px 40px rgba(0,0,0,.6)"}} onClick={e=>e.stopPropagation()}/>
+          <button onClick={()=>setLightbox(null)} style={{position:"absolute",top:20,right:24,background:"rgba(255,255,255,.2)",border:"none",color:"#fff",fontSize:22,width:40,height:40,borderRadius:"50%",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+        </div>
+      )}
       {/* Task sidebar */}
       <div className="tsb">
         <div style={{padding:"14px 8px 10px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -1562,7 +1570,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             <div className="fx g3 wrap" style={{marginBottom:12}}>
               {imgs.slice(0,6).map(f=>{
                 const url=di?.json_value?.[f.field_name];
-                return url?<img key={f.field_name} src={url} alt="" className="imt" onError={e=>e.target.style.display="none"}/>:null;
+                return url?<img key={f.field_name} src={url} alt="" className="imt" style={{cursor:"zoom-in"}} onClick={()=>setLightbox(url)} onError={e=>e.target.style.display="none"}/>:null;
               })}
             </div>
           )}
@@ -1621,7 +1629,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
                 const dis=isSub&&contest.mode==="practice";
                 return (
                   <div key={f.field_name}>
-                    <label className="fl">{f.field_name} <span className="tag">{f.input_type}</span></label>
+                    <label className="fl">{f.field_name}</label>
                     {f.input_type==="dropdown" ? (
                       <select value={val} disabled={dis} onChange={e=>saveAns(cur,f.field_name,e.target.value)}>
                         <option value="">Select...</option>
