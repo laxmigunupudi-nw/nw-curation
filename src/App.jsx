@@ -643,14 +643,21 @@ function AdminDomains({ showToast }) {
       const catc = keys.find(k=>k==="Category")||keys.find(k=>k==="Product Type")||keys.find(k=>k.toLowerCase().includes("categor"))||keys[0];
       const atrc = keys.find(k=>k.toLowerCase().includes("all attributes"));
 
-      const items = gRows.map((row,i)=>({
-        domain_id: dom.id,
-        // Always use row index as the key to guarantee uniqueness across any file format
-        item_key: ikc ? `${String(row[ikc]||"").trim()}-${i+1}` : `item-${i+1}`,
-        category: String(row[catc]||"Unknown").trim(),
-        json_value: row,
-        attributes_for_category: atrc?String(row[atrc]||"").trim():"",
-      }));
+      const items = gRows.map((row,i)=>{
+        // Exclude bulky/redundant columns from json_value storage
+        const excludeCols = new Set(["JSONValue","jsonvalue","json_value","All Attributes for Category"]);
+        const cleanRow = Object.fromEntries(
+          Object.entries(row).filter(([k])=>!excludeCols.has(k))
+        );
+        return {
+          domain_id: dom.id,
+          // Always use row index as the key to guarantee uniqueness across any file format
+          item_key: ikc ? `${String(row[ikc]||"").trim()}-${i+1}` : `item-${i+1}`,
+          category: String(row[catc]||"Unknown").trim(),
+          json_value: cleanRow,
+          attributes_for_category: atrc?String(row[atrc]||"").trim():"",
+        };
+      });
 
       for (let i=0;i<items.length;i+=50) {
         const {error:ie} = await sb.from("domain_items").insert(items.slice(i,i+50));
