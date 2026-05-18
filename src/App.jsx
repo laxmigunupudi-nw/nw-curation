@@ -1607,9 +1607,10 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             <div className="fx g3 wrap" style={{marginBottom:12}}>
               {imgs.slice(0,6).map(f=>{
                 const url=di?.json_value?.[f.field_name];
+                const fullUrl = url.replace(/[?&](odnHeight|odnWidth|odnBg)=[^&]*/g,'').replace(/[?&]$/,'');
                 return url?<img key={f.field_name} src={url} alt="" className="imt"
                   style={{cursor:"pointer"}}
-                  onClick={()=>window.open(url,"_blank")}
+                  onClick={()=>window.open(fullUrl,"_blank")}
                   onMouseEnter={e=>e.target.style.opacity=".8"}
                   onMouseLeave={e=>e.target.style.opacity="1"}
                   onError={e=>e.target.style.display="none"}/>:null;
