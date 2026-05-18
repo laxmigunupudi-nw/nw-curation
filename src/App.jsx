@@ -118,7 +118,7 @@ const css = `
   .cert-l2{background:var(--gbg);border:1.5px solid rgba(10,124,85,.35);color:var(--green)}
   .cert-l1{background:var(--abg);border:1.5px solid rgba(180,83,9,.35);color:var(--amber)}
   .cert-l0{background:var(--rbg);border:1.5px solid rgba(192,57,43,.35);color:var(--red)}
-  .imt{width:64px;height:64px;object-fit:cover;border-radius:var(--r);border:1.5px solid var(--border);background:var(--bg3)}
+  .imt{width:100px;height:100px;object-fit:cover;border-radius:var(--r);border:1.5px solid var(--border);background:var(--bg3)}
   .cb2{background:var(--bg3);border:1.5px solid var(--border);border-radius:var(--r);padding:10px 12px;font-family:var(--mono);font-size:12px;color:var(--accent);word-break:break-all;cursor:pointer;transition:background .15s}
   .cb2:hover{background:var(--bg4)}
   .al{padding:11px 14px;border-radius:var(--r);margin-bottom:14px;font-size:13px;line-height:1.5}
@@ -223,24 +223,13 @@ function LoginPage({ onLogin }) {
 
   async function doLogin(e) {
     e.preventDefault(); setLoad(true); setErr("");
-    
-    // Step 1: Sign in
     const {data,error} = await sb.auth.signInWithPassword({email:email.trim(),password:pw});
     if (error) { setErr(error.message); setLoad(false); return; }
-
-    // Step 2: Load profile — retry up to 5 times with increasing delay
-    let u = null;
-    for (let i=0; i<5; i++) {
-      await new Promise(r=>setTimeout(r,500 + i*300));
-      const {data:row, error:re} = await sb.from("users").select("*").eq("id",data.user.id).single();
-      if (row) { u = row; break; }
-      // If not an RLS/auth issue, stop retrying
-      if (re && !re.message.includes("JWT") && !re.message.includes("row") && re.code !== "PGRST116") break;
-    }
-
-    if (!u) { setErr("Could not load profile. Please try again."); setLoad(false); return; }
-    if (u.status==="disabled") { await sb.auth.signOut(); setErr("Account disabled. Contact admin."); setLoad(false); return; }
-    onLogin(u); setLoad(false);
+    // Use security definer function — bypasses RLS, always works immediately after sign in
+    const {data:prof,error:pe} = await sb.rpc("get_my_profile");
+    if (pe||!prof) { setErr("Could not load profile. Please try again."); setLoad(false); return; }
+    if (prof.status==="disabled") { await sb.auth.signOut(); setErr("Account disabled. Contact admin."); setLoad(false); return; }
+    onLogin(prof); setLoad(false);
   }
 
   async function doSetPw(e) {
@@ -1713,41 +1702,25 @@ export default function App() {
   const [prof,setProf]=useState(null);
   const [loading,setLoading]=useState(true);
 
-  async function loadProfile(userId) {
-    for (let i=0; i<5; i++) {
-      await new Promise(r=>setTimeout(r,400 + i*200));
-      try {
-        const {data,error} = await sb.from("users").select("*").eq("id",userId).single();
-        if (data) return data;
-        if (error) console.warn(`Profile load attempt ${i+1}:`, error.message);
-      } catch(e) { console.warn("Profile load exception:",e); }
-    }
-    return null;
-  }
-
   useEffect(()=>{
-    // Set a hard timeout — if Supabase doesn't respond in 8s, show login
-    const timeout = setTimeout(()=>{ setLoading(false); }, 8000);
-
-    sb.auth.getSession().then(async({data:{session},error})=>{
+    const timeout = setTimeout(()=>setLoading(false), 6000);
+    sb.auth.getSession().then(async({data:{session}})=>{
       clearTimeout(timeout);
-      if (error) { console.error("Session error:",error.message); setLoading(false); return; }
       if (session?.user) {
-        const p = await loadProfile(session.user.id);
-        setProf(p);
+        const {data:prof} = await sb.rpc("get_my_profile");
+        setProf(prof||null);
       }
       setLoading(false);
-    }).catch(e=>{ clearTimeout(timeout); console.error("getSession failed:",e); setLoading(false); });
+    }).catch(()=>{ clearTimeout(timeout); setLoading(false); });
 
-    const {data:{subscription}}=sb.auth.onAuthStateChange(async(_,session)=>{
+    const {data:{subscription}}=sb.auth.onAuthStateChange(async(event,session)=>{
+      if (event==="SIGNED_OUT") { setProf(null); return; }
       if (session?.user) {
-        const p = await loadProfile(session.user.id);
-        setProf(p);
-      } else {
-        setProf(null);
+        const {data:prof} = await sb.rpc("get_my_profile");
+        setProf(prof||null);
       }
     });
-    return ()=>{ clearTimeout(timeout); subscription.unsubscribe(); };
+    return ()=>subscription.unsubscribe();
   },[]);
 
   async function logout() { await sb.auth.signOut(); setProf(null); }
