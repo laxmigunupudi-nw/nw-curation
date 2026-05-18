@@ -226,12 +226,14 @@ function LoginPage({ onLogin }) {
     const {data,error} = await sb.auth.signInWithPassword({email:email.trim(),password:pw});
     if (error) { setErr(error.message); setLoad(false); return; }
 
-    // Step 2: Load profile — retry up to 3 times with delay
+    // Step 2: Load profile — retry up to 5 times with increasing delay
     let u = null;
-    for (let i=0; i<3; i++) {
-      await new Promise(r=>setTimeout(r,400));
-      const {data:row} = await sb.from("users").select("*").eq("id",data.user.id).single();
+    for (let i=0; i<5; i++) {
+      await new Promise(r=>setTimeout(r,500 + i*300));
+      const {data:row, error:re} = await sb.from("users").select("*").eq("id",data.user.id).single();
       if (row) { u = row; break; }
+      // If not an RLS/auth issue, stop retrying
+      if (re && !re.message.includes("JWT") && !re.message.includes("row") && re.code !== "PGRST116") break;
     }
 
     if (!u) { setErr("Could not load profile. Please try again."); setLoad(false); return; }
@@ -1671,11 +1673,15 @@ export default function App() {
   const [loading,setLoading]=useState(true);
 
   async function loadProfile(userId) {
-    try {
-      const {data,error} = await sb.from("users").select("*").eq("id",userId).single();
-      if (error) { console.error("Profile load error:",error.message); return null; }
-      return data||null;
-    } catch(e) { console.error("Profile load exception:",e); return null; }
+    for (let i=0; i<5; i++) {
+      await new Promise(r=>setTimeout(r,400 + i*200));
+      try {
+        const {data,error} = await sb.from("users").select("*").eq("id",userId).single();
+        if (data) return data;
+        if (error) console.warn(`Profile load attempt ${i+1}:`, error.message);
+      } catch(e) { console.warn("Profile load exception:",e); }
+    }
+    return null;
   }
 
   useEffect(()=>{
