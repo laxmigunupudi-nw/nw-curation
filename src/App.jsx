@@ -756,7 +756,7 @@ function AdminContests({ showToast }) {
     const [{data:c},{data:d},{data:u}] = await Promise.all([
       sb.from("contests").select("*, contest_domains(domain_id,task_count,domains(name)), contest_users(count)").order("created_at",{ascending:false}),
       sb.from("domains").select("id,name"),
-      sb.from("users").select("id,internal_id,email,full_name").eq("role","participant").eq("status","active").not("id","is",null),
+      sb.from("users").select("id,internal_id,email,full_name").eq("role","participant").eq("status","active"),
     ]);
     setContests(c||[]); setDomains(d||[]); setUsers(u||[]); setLoad(false);
   }
@@ -859,8 +859,8 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
       let uids=[...selU];
       if (amode==="csv"&&csvU.trim()) {
         const em=csvU.trim().split("\n").map(l=>l.split(",")[0].trim().toLowerCase()).filter(Boolean);
-        const {data:fu}=await sb.from("users").select("id").in("email",em);
-        uids=[...new Set([...uids,...(fu||[]).map(u=>u.id)])];
+        const {data:fu}=await sb.from("users").select("internal_id").in("email",em);
+        uids=[...new Set([...uids,...(fu||[]).map(u=>u.internal_id)])];
       }
       if (uids.length>0) await sb.from("contest_users").insert(uids.map(uid2=>({contest_id:con.id,user_id:uid2})));
       onDone();
@@ -933,9 +933,9 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
               <div style={{maxHeight:180,overflowY:"auto",background:"var(--bg3)",borderRadius:"var(--r)",padding:8,border:"1px solid var(--border)"}}>
                 {users.map(u=>(
                   <label key={u.id} className="fx g3 ac" style={{padding:"6px 8px",cursor:"pointer",borderRadius:6}}>
-                    <input type="checkbox" checked={selU.includes(u.id)} onChange={ev=>setSelU(p=>ev.target.checked?[...p,u.id]:p.filter(id=>id!==u.id))}/>
+                    <input type="checkbox" checked={selU.includes(u.internal_id)} onChange={ev=>setSelU(p=>ev.target.checked?[...p,u.internal_id]:p.filter(id=>id!==u.internal_id))}/>
                     <span className="sm">{u.full_name||u.email}</span>
-                    <span className="xs m3" style={{marginLeft:"auto"}}>{u.full_name?u.email:""}{!u.id&&<span style={{color:"var(--amber)",marginLeft:4}}>(not signed up yet)</span>}</span>
+                    <span className="xs m3" style={{marginLeft:"auto"}}>{u.full_name?u.email:""}{!u.id&&<span style={{color:"var(--amber)",marginLeft:4}}> (pending signup)</span>}</span>
                   </label>
                 ))}
                 {users.length===0&&<div className="xs m3" style={{padding:8}}>No participants yet. Add users first.</div>}
@@ -974,8 +974,8 @@ function AssignModal({ contest, users, onClose, onSaved }) {
     let toAdd=[...sel];
     if (mode==="csv"&&csv.trim()) {
       const em=csv.trim().split("\n").map(l=>l.split(",")[0].trim().toLowerCase()).filter(Boolean);
-      const {data}=await sb.from("users").select("id").in("email",em);
-      toAdd=[...new Set([...toAdd,...(data||[]).map(u=>u.id)])];
+      const {data}=await sb.from("users").select("internal_id").in("email",em);
+      toAdd=[...new Set([...toAdd,...(data||[]).map(u=>u.internal_id)])];
     }
     const newIds=toAdd.filter(id=>!assigned.includes(id));
     if (newIds.length>0) await sb.from("contest_users").insert(newIds.map(uid=>({contest_id:contest.id,user_id:uid})));
@@ -993,18 +993,16 @@ function AssignModal({ contest, users, onClose, onSaved }) {
         </div>
         {mode==="sel" ? (
           <div style={{maxHeight:280,overflowY:"auto",background:"var(--bg3)",borderRadius:"var(--r)",padding:8,marginBottom:14,border:"1px solid var(--border)"}}>
-            {users.filter(u=>u.id).map(u=>(
-              <label key={u.id} className="fx g3 ac" style={{padding:"7px 8px",cursor:"pointer",borderRadius:6}}>
-                <input type="checkbox" checked={sel.includes(u.id)} onChange={ev=>setSel(p=>ev.target.checked?[...p,u.id]:p.filter(id=>id!==u.id))}/>
+            {users.map(u=>(
+              <label key={u.internal_id} className="fx g3 ac" style={{padding:"7px 8px",cursor:"pointer",borderRadius:6}}>
+                <input type="checkbox" checked={sel.includes(u.internal_id)} onChange={ev=>setSel(p=>ev.target.checked?[...p,u.internal_id]:p.filter(id=>id!==u.internal_id))}/>
                 <span className="sm">{u.full_name||u.email}</span>
-                <span className="xs m3" style={{marginLeft:"auto"}}>{u.full_name?u.email:""}</span>
+                <span className="xs m3" style={{marginLeft:"auto"}}>
+                  {u.full_name?u.email:""}
+                  {!u.id&&<span style={{color:"var(--amber)",fontSize:11,marginLeft:4}}>(pending signup)</span>}
+                </span>
               </label>
             ))}
-            {users.filter(u=>!u.id).length>0&&(
-              <div className="xs m3" style={{padding:"8px",borderTop:"1px solid var(--border)",marginTop:4}}>
-                {users.filter(u=>!u.id).length} user(s) not yet signed up — they won't appear until they set their password.
-              </div>
-            )}
           </div>
         ) : (
           <div style={{marginBottom:14}}>
@@ -1182,13 +1180,13 @@ function UserContests({ user, onOpen }) {
 
   async function load2() {
     setLoad(true);
-    const {data:cu}=await sb.from("contest_users").select("contest_id").eq("user_id",user.id);
+    const {data:cu}=await sb.from("contest_users").select("contest_id").eq("user_id",user.internal_id);
     if (!cu||!cu.length) { setLoad(false); return; }
     const ids=cu.map(r=>r.contest_id);
     const [{data:all},{data:tasks},{data:scores}]=await Promise.all([
       sb.from("contests").select("*, contest_domains(domain_id,task_count,domains(name))").in("id",ids).order("created_at",{ascending:false}),
-      sb.from("tasks").select("contest_id,status").eq("user_id",user.id),
-      sb.from("v_user_contest_accuracy").select("*").eq("user_id",user.id),
+      sb.from("tasks").select("contest_id,status").eq("user_id",user.internal_id),
+      sb.from("v_user_contest_accuracy").select("*").eq("user_id",user.internal_id),
     ]);
     const tm={};
     (tasks||[]).forEach(t=>{
@@ -1343,7 +1341,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     }
     setFields(fm);
 
-    const {data:et}=await sb.from("tasks").select("*, responses(*)").eq("contest_id",contest.id).eq("user_id",user.id);
+    const {data:et}=await sb.from("tasks").select("*, responses(*)").eq("contest_id",contest.id).eq("user_id",user.internal_id);
     const tm={}; const am={};
     (et||[]).forEach(t=>{
       tm[t.contest_item_id]=t;
@@ -1355,7 +1353,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     const allSub=(ci||[]).length>0&&(ci||[]).every(item=>tm[item.id]?.status==="submitted");
     if (allSub&&contest.mode==="assessment") {
       setSubmitted(true);
-      const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single();
+      const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.internal_id).single();
       setScore(s);
     }
     setLoading(false);
@@ -1371,7 +1369,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     }
     creatingTask.current[item.id]=true;
     const {data:t,error}=await sb.from("tasks").insert({
-      contest_id:contest.id,user_id:user.id,contest_item_id:item.id,
+      contest_id:contest.id,user_id:user.internal_id,contest_item_id:item.id,
       status:"in_progress",started_at:new Date().toISOString(),
     }).select().single();
     creatingTask.current[item.id]=false;
@@ -1404,7 +1402,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     let task=tasks[item.id];
     if (!task) {
       const {data:t}=await sb.from("tasks").insert({
-        contest_id:contest.id,user_id:user.id,contest_item_id:item.id,
+        contest_id:contest.id,user_id:user.internal_id,contest_item_id:item.id,
         status:"submitted",started_at:new Date().toISOString(),submitted_at:new Date().toISOString(),
       }).select().single();
       task=t;
@@ -1426,7 +1424,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       const task=tasks[item.id];
       if (!task) {
         const {data:t}=await sb.from("tasks").insert({
-          contest_id:contest.id,user_id:user.id,contest_item_id:item.id,
+          contest_id:contest.id,user_id:user.internal_id,contest_item_id:item.id,
           status:"submitted",started_at:new Date().toISOString(),submitted_at:new Date().toISOString(),
         }).select().single();
         if(t)updatedTasks[item.id]=t;
