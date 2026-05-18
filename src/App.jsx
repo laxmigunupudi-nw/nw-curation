@@ -637,13 +637,16 @@ function AdminDomains({ showToast }) {
 
       // Auto-detect key columns
       const keys = Object.keys(gRows[0]);
-      const ikc = keys.find(k=>k==="Item ID")||keys.find(k=>k.toLowerCase().includes("item id"))||keys[0];
+      // For item_key, always use row index to guarantee uniqueness.
+      // Optionally also look for a dedicated ID column.
+      const ikc = keys.find(k=>k==="Item ID")||keys.find(k=>k.toLowerCase().includes("item id"))||null;
       const catc = keys.find(k=>k==="Category")||keys.find(k=>k==="Product Type")||keys.find(k=>k.toLowerCase().includes("categor"))||keys[0];
       const atrc = keys.find(k=>k.toLowerCase().includes("all attributes"));
 
       const items = gRows.map((row,i)=>({
         domain_id: dom.id,
-        item_key: String(row[ikc]||`item-${i+1}`).trim(),
+        // Always use row index as the key to guarantee uniqueness across any file format
+        item_key: ikc ? `${String(row[ikc]||"").trim()}-${i+1}` : `item-${i+1}`,
         category: String(row[catc]||"Unknown").trim(),
         json_value: row,
         attributes_for_category: atrc?String(row[atrc]||"").trim():"",
