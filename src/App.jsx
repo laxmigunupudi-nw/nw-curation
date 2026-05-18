@@ -118,7 +118,7 @@ const css = `
   .cert-l2{background:var(--gbg);border:1.5px solid rgba(10,124,85,.35);color:var(--green)}
   .cert-l1{background:var(--abg);border:1.5px solid rgba(180,83,9,.35);color:var(--amber)}
   .cert-l0{background:var(--rbg);border:1.5px solid rgba(192,57,43,.35);color:var(--red)}
-  .imt{width:100px;height:100px;object-fit:cover;border-radius:var(--r);border:1.5px solid var(--border);background:var(--bg3)}
+  .imt{width:130px;height:130px;object-fit:cover;border-radius:var(--r);border:1.5px solid var(--border);background:var(--bg3);transition:opacity .15s}
   .cb2{background:var(--bg3);border:1.5px solid var(--border);border-radius:var(--r);padding:10px 12px;font-family:var(--mono);font-size:12px;color:var(--accent);word-break:break-all;cursor:pointer;transition:background .15s}
   .cb2:hover{background:var(--bg4)}
   .al{padding:11px 14px;border-radius:var(--r);margin-bottom:14px;font-size:13px;line-height:1.5}
@@ -1383,7 +1383,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const [showVal,setShowVal]=useState(false);
   const [submitted,setSubmitted]=useState(false);
   const [score,setScore]=useState(null);
-  const [lightbox,setLightbox]=useState(null);
+
   // Ref to prevent concurrent ensureTask calls
   const creatingTask = useRef({});
 
@@ -1544,7 +1544,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const di=cur.domain_items; const did=di?.domains?.id; const af=fields[did]||[];
   const aa=(di?.attributes_for_category||"").split(/,\s*/).map(s=>s.trim()).filter(Boolean);
   const task=tasks[cur.id]; const ta=answers[task?.id]||{}; const isSub=task?.status==="submitted";
-  const ctx=af.filter(f=>f.field_role==="context"&&(aa.length===0||aa.includes(f.field_name)));
+  const ctx=af.filter(f=>f.field_role==="context"); // always show all context fields
   const imgs=af.filter(f=>f.field_role==="image");
   const cure=af.filter(f=>f.field_role==="curate"&&(aa.length===0||aa.includes(f.field_name)));
 
@@ -1553,13 +1553,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
   return (
     <div style={{display:"flex",height:"100vh",overflow:"hidden",background:"var(--bg)"}}>
-      {/* Lightbox — outside scroll area so it covers full screen */}
-      {lightbox&&(
-        <div onClick={()=>setLightbox(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.9)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:3000,cursor:"zoom-out"}}>
-          <img src={lightbox} alt="" style={{maxWidth:"92vw",maxHeight:"92vh",objectFit:"contain",borderRadius:"var(--r)",boxShadow:"0 8px 40px rgba(0,0,0,.6)"}} onClick={e=>e.stopPropagation()}/>
-          <button onClick={()=>setLightbox(null)} style={{position:"absolute",top:20,right:24,background:"rgba(255,255,255,.2)",border:"none",color:"#fff",fontSize:22,width:40,height:40,borderRadius:"50%",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
-        </div>
-      )}
+
       {/* Task sidebar */}
       <div className="tsb">
         <div style={{padding:"14px 8px 10px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -1613,7 +1607,12 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             <div className="fx g3 wrap" style={{marginBottom:12}}>
               {imgs.slice(0,6).map(f=>{
                 const url=di?.json_value?.[f.field_name];
-                return url?<img key={f.field_name} src={url} alt="" className="imt" style={{cursor:"zoom-in"}} onClick={()=>setLightbox(url)} onError={e=>e.target.style.display="none"}/>:null;
+                return url?<img key={f.field_name} src={url} alt="" className="imt"
+                  style={{cursor:"pointer"}}
+                  onClick={()=>window.open(url,"_blank")}
+                  onMouseEnter={e=>e.target.style.opacity=".8"}
+                  onMouseLeave={e=>e.target.style.opacity="1"}
+                  onError={e=>e.target.style.display="none"}/>:null;
               })}
             </div>
           )}
