@@ -1346,7 +1346,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   useEffect(()=>{ loadC(); },[]);
 
   async function loadC() {
-    await sb.rpc("close_expired_contests").catch(()=>{});
+    try { await sb.rpc("close_expired_contests"); } catch(e) {}
     const {data:ci} = await sb.from("contest_items")
       .select("*, domain_items(*, domains(id,name))")
       .eq("contest_id",contest.id)
