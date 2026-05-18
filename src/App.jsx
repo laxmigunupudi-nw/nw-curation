@@ -239,10 +239,10 @@ function LoginPage({ onLogin }) {
     if (np.length<6) { setErr("Minimum 6 characters"); return; }
     setLoad(true); setErr("");
 
-    // Step 1: verify email is in our users table
-    const {data:u,error:ue} = await sb.from("users").select("id,status").eq("email",email.toLowerCase().trim()).single();
-    if (ue||!u) { setErr("Email not found. Ask your admin to add you first."); setLoad(false); return; }
-    if (u.status==="disabled") { setErr("Account disabled. Contact admin."); setLoad(false); return; }
+    // Step 1: verify email is in our users table using security definer function
+    const {data:exists,error:ue} = await sb.rpc("check_email_exists", {check_email: email.toLowerCase().trim()});
+    if (ue) { setErr("Could not verify email. Try again."); setLoad(false); return; }
+    if (!exists) { setErr("Email not found. Ask your admin to add you first."); setLoad(false); return; }
 
     // Step 2: Try to create auth account (signUp)
     // If account already exists, the sign-in below will handle it
