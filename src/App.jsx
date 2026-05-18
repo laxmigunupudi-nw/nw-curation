@@ -229,38 +229,48 @@ function LoginPage({ onLogin }) {
     onLogin(u); setLoad(false);
   }
 
-  // First-time / password reset flow:
-  // 1. Check email exists in our users table
-  // 2. Try signUp (creates auth account) — if user already has auth account, this returns a "user exists" error which is fine
-  // 3. Sign in with new password
   async function doSetPw(e) {
     e.preventDefault();
     if (np!==cf) { setErr("Passwords do not match"); return; }
     if (np.length<6) { setErr("Minimum 6 characters"); return; }
     setLoad(true); setErr("");
 
-    // Step 1: verify email is in our users table using security definer function
-    const {data:exists,error:ue} = await sb.rpc("check_email_exists", {check_email: email.toLowerCase().trim()});
-    if (ue) { setErr("Could not verify email. Try again."); setLoad(false); return; }
+    const cleanEmail = email.toLowerCase().trim();
+
+    // Step 1: verify email exists in users table (uses security definer — works without auth)
+    const {data:exists,error:checkErr} = await sb.rpc("check_email_exists", {check_email: cleanEmail});
+    if (checkErr) { setErr("Could not verify email. Try again."); setLoad(false); return; }
     if (!exists) { setErr("Email not found. Ask your admin to add you first."); setLoad(false); return; }
 
-    // Step 2: Try to create auth account (signUp)
-    // If account already exists, the sign-in below will handle it
-    await sb.auth.signUp({email:email.trim(),password:np});
+    // Step 2: Sign up — Supabase may require email confirmation depending on project settings.
+    // We use signUp and then immediately try signIn. If email confirmation is ON in Supabase,
+    // admin must disable it: Auth > Settings > disable "Enable email confirmations"
+    const {data:suData, error:suErr} = await sb.auth.signUp({
+      email: cleanEmail,
+      password: np,
+    });
 
-    // Step 3: Sign in — works whether account was just created or already existed
-    const {data:si,error:sie} = await sb.auth.signInWithPassword({email:email.trim(),password:np});
-    if (sie) {
-      // Password wrong for existing account — they need to reset differently
-      setErr("Could not sign in. If you already have a password, use the Sign in tab. If you need a reset, ask your admin.");
+    // If signup failed for a reason other than "user already exists", show error
+    if (suErr && !suErr.message.toLowerCase().includes("already")) {
+      setErr(suErr.message);
       setLoad(false); return;
     }
 
-    // Step 4: Make sure profile row has their auth ID linked
-    await sb.from("users").update({id:si.user.id}).eq("email",email.toLowerCase().trim());
+    // Step 3: Sign in with the new password
+    const {data:si, error:sie} = await sb.auth.signInWithPassword({email:cleanEmail, password:np});
+    if (sie) {
+      setErr("Sign in failed: " + sie.message + ". Make sure email confirmations are disabled in Supabase Auth settings.");
+      setLoad(false); return;
+    }
 
+    // Step 4: Link auth id to the users table row
+    await sb.rpc("link_auth_user", {auth_id: si.user.id, user_email: cleanEmail});
+
+    // Step 5: Load profile
     const {data:prof} = await sb.from("users").select("*").eq("id",si.user.id).single();
-    onLogin(prof||u); setLoad(false);
+    if (!prof) { setErr("Profile not found after signup. Contact admin."); setLoad(false); return; }
+    onLogin(prof);
+    setLoad(false);
   }
 
   return (
