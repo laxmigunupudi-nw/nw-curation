@@ -1330,6 +1330,56 @@ function UserProfile({ user, showToast }) {
   );
 }
 
+
+// ── CURATE FIELD — isolated component so typing doesn't re-render parent ─
+function CurateField({ fieldDef, initialValue, disabled, onSave }) {
+  const [val, setVal] = useState(initialValue||"");
+  const saveTimer = useRef(null);
+
+  // Sync if parent changes (e.g. navigating to same task)
+  useEffect(()=>{ setVal(initialValue||""); }, [initialValue]);
+
+  function handleChange(newVal) {
+    setVal(newVal);
+    // For dropdowns save immediately; for text/numeric debounce 600ms
+    if (fieldDef.input_type === "dropdown") {
+      onSave(fieldDef.field_name, newVal);
+    } else {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(()=>{ onSave(fieldDef.field_name, newVal); }, 600);
+    }
+  }
+
+  function handleBlur() {
+    // Always save on blur regardless of debounce
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    onSave(fieldDef.field_name, val);
+  }
+
+  const opts = fieldDef.dropdown_values ? fieldDef.dropdown_values.split(";").map(s=>s.trim()).filter(Boolean) : [];
+
+  return (
+    <div key={fieldDef.field_name}>
+      <label className="fl">{fieldDef.field_name}</label>
+      {fieldDef.input_type==="dropdown" ? (
+        <select value={val} disabled={disabled} onChange={e=>handleChange(e.target.value)}>
+          <option value="">Select...</option>
+          {opts.map(o=><option key={o} value={o}>{o}</option>)}
+        </select>
+      ) : fieldDef.input_type==="numeric" ? (
+        <input type="number" value={val} disabled={disabled}
+          onChange={e=>handleChange(e.target.value)}
+          onBlur={handleBlur}/>
+      ) : (
+        <input type="text" value={val} disabled={disabled}
+          placeholder={`Enter ${fieldDef.field_name.toLowerCase()}...`}
+          onChange={e=>handleChange(e.target.value)}
+          onBlur={handleBlur}/>
+      )}
+    </div>
+  );
+}
+
 // ── CONTEST TASK VIEW ────────────────────────────────────────
 function ContestTaskView({ contest, user, onClose, showToast }) {
   const [items,setItems]=useState([]);
@@ -1625,26 +1675,15 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             </div>
             {cure.length===0&&<div className="sm m3">No curate fields configured for this item.</div>}
             <div style={{display:"flex",flexDirection:"column",gap:14}}>
-              {cure.map(f=>{
-                const val=ta[f.field_name]||"";
-                const opts=f.dropdown_values?f.dropdown_values.split(";").map(s=>s.trim()).filter(Boolean):[];
-                const dis=isSub&&contest.mode==="practice";
-                return (
-                  <div key={f.field_name}>
-                    <label className="fl">{f.field_name}</label>
-                    {f.input_type==="dropdown" ? (
-                      <select value={val} disabled={dis} onChange={e=>saveAns(cur,f.field_name,e.target.value)}>
-                        <option value="">Select...</option>
-                        {opts.map(o=><option key={o} value={o}>{o}</option>)}
-                      </select>
-                    ) : f.input_type==="numeric" ? (
-                      <input type="number" value={val} disabled={dis} onChange={e=>saveAns(cur,f.field_name,e.target.value)}/>
-                    ) : (
-                      <input type="text" value={val} disabled={dis} placeholder={`Enter ${f.field_name.toLowerCase()}...`} onChange={e=>saveAns(cur,f.field_name,e.target.value)}/>
-                    )}
-                  </div>
-                );
-              })}
+              {cure.map(f=>(
+                <CurateField
+                  key={`${cur.id}-${f.field_name}`}
+                  fieldDef={f}
+                  initialValue={ta[f.field_name]||""}
+                  disabled={isSub&&contest.mode==="practice"}
+                  onSave={(fieldName, val)=>saveAns(cur, fieldName, val)}
+                />
+              ))}
             </div>
             <div className="fx g3 jb" style={{marginTop:20}}>
               <button className="bg bsm" disabled={idx===0} onClick={()=>setIdx(i=>i-1)}>← Previous</button>
