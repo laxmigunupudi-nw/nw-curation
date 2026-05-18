@@ -221,13 +221,20 @@ function LoginPage({ onLogin }) {
 
   async function doLogin(e) {
     e.preventDefault(); setLoad(true); setErr("");
+    
+    // Step 1: Sign in
     const {data,error} = await sb.auth.signInWithPassword({email:email.trim(),password:pw});
     if (error) { setErr(error.message); setLoad(false); return; }
-    // Small delay to ensure session is fully established before querying
-    await new Promise(r=>setTimeout(r,300));
-    const {data:u, error:ue} = await sb.from("users").select("*").eq("id",data.user.id).single();
-    if (ue) { setErr("Profile load failed: " + ue.message); setLoad(false); return; }
-    if (!u) { setErr("User profile not found. Contact admin."); setLoad(false); return; }
+
+    // Step 2: Load profile — retry up to 3 times with delay
+    let u = null;
+    for (let i=0; i<3; i++) {
+      await new Promise(r=>setTimeout(r,400));
+      const {data:row} = await sb.from("users").select("*").eq("id",data.user.id).single();
+      if (row) { u = row; break; }
+    }
+
+    if (!u) { setErr("Could not load profile. Please try again."); setLoad(false); return; }
     if (u.status==="disabled") { await sb.auth.signOut(); setErr("Account disabled. Contact admin."); setLoad(false); return; }
     onLogin(u); setLoad(false);
   }
