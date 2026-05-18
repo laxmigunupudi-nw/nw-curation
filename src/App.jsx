@@ -130,6 +130,8 @@ const css = `
   ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
   select option{background:#fff;color:var(--text)}
   input[type=file]{padding:6px 11px;font-size:12px;background:var(--bg3)}
+  input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+  input[type=number]{-moz-appearance:textfield}
   input:disabled,select:disabled,textarea:disabled{opacity:.55;cursor:not-allowed;background:var(--bg3)}
   .toast-wrap{position:fixed;bottom:22px;right:22px;z-index:3000;animation:fi .2s ease}
   .topbar{background:#fff;border-bottom:1.5px solid var(--border);padding:13px 28px;display:flex;align-items:center;justify-content:space-between;box-shadow:0 1px 3px rgba(0,0,0,.04)}
