@@ -1703,21 +1703,24 @@ export default function App() {
   const [loading,setLoading]=useState(true);
 
   useEffect(()=>{
-    const timeout = setTimeout(()=>setLoading(false), 6000);
+    // On mount: check existing session once
+    const timeout = setTimeout(()=>setLoading(false), 5000);
     sb.auth.getSession().then(async({data:{session}})=>{
       clearTimeout(timeout);
       if (session?.user) {
-        const {data:prof} = await sb.rpc("get_my_profile");
-        setProf(prof||null);
+        const {data:p} = await sb.rpc("get_my_profile");
+        setProf(p||null);
       }
       setLoading(false);
     }).catch(()=>{ clearTimeout(timeout); setLoading(false); });
 
+    // Only react to actual SIGNED_IN and SIGNED_OUT events
+    // Ignore TOKEN_REFRESHED, INITIAL_SESSION etc — they cause false logouts
     const {data:{subscription}}=sb.auth.onAuthStateChange(async(event,session)=>{
       if (event==="SIGNED_OUT") { setProf(null); return; }
-      if (session?.user) {
-        const {data:prof} = await sb.rpc("get_my_profile");
-        setProf(prof||null);
+      if (event==="SIGNED_IN" && session?.user) {
+        const {data:p} = await sb.rpc("get_my_profile");
+        if (p) setProf(p);
       }
     });
     return ()=>subscription.unsubscribe();
