@@ -654,7 +654,7 @@ function AdminDomains({ showToast }) {
       // Optionally also look for a dedicated ID column.
       const ikc = keys.find(k=>k==="Item ID")||keys.find(k=>k.toLowerCase().includes("item id"))||null;
       const catc = keys.find(k=>k==="Category")||keys.find(k=>k==="Product Type")||keys.find(k=>k.toLowerCase().includes("categor"))||keys[0];
-      const atrc = keys.find(k=>k.toLowerCase().includes("all attributes"));
+      const atrc = keys.find(k=>k==="All Attributes for Category")||keys.find(k=>k.toLowerCase().trim()==="all attributes for category");
 
       const items = gRows.map((row,i)=>{
         // Exclude bulky/redundant columns from json_value storage
@@ -1542,7 +1542,28 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   if (!cur) return <div style={{padding:40,textAlign:"center",color:"var(--text3)"}}>No items found in this contest.</div>;
 
   const di=cur.domain_items; const did=di?.domains?.id; const af=fields[did]||[];
-  const aa=(di?.attributes_for_category||"").split(/,\s*/).map(s=>s.trim()).filter(Boolean);
+  // Smart split: handles field names containing commas e.g. "Cleaning, Care & Maintenance"
+  const rawAttrs = di?.attributes_for_category||"";
+  const allFieldNames = af.map(f=>f.field_name);
+  let aa = [];
+  if (rawAttrs) {
+    let remaining = rawAttrs;
+    const found = [];
+    const sortedFields = [...allFieldNames].sort((a,b)=>b.length-a.length);
+    while (remaining.length > 0) {
+      remaining = remaining.replace(/^[,\s]+/, '');
+      if (!remaining) break;
+      const match = sortedFields.find(f=>remaining.startsWith(f));
+      if (match) { found.push(match); remaining = remaining.slice(match.length); }
+      else {
+        const ci = remaining.indexOf(',');
+        if (ci === -1) { found.push(remaining.trim()); break; }
+        found.push(remaining.slice(0, ci).trim());
+        remaining = remaining.slice(ci + 1);
+      }
+    }
+    aa = found.filter(Boolean);
+  }
   const task=tasks[cur.id]; const ta=answers[task?.id]||{}; const isSub=task?.status==="submitted";
   const ctx=af.filter(f=>f.field_role==="context"); // always show all context fields
   const imgs=af.filter(f=>f.field_role==="image");
@@ -1713,12 +1734,8 @@ export default function App() {
       setLoading(false);
     }).catch(()=>{ clearTimeout(timeout); setLoading(false); });
 
-    const {data:{subscription}}=sb.auth.onAuthStateChange(async(event,session)=>{
-      if (event==="SIGNED_OUT") { setProf(null); return; }
-      if (session?.user) {
-        const {data:prof} = await sb.rpc("get_my_profile");
-        setProf(prof||null);
-      }
+    const {data:{subscription}}=sb.auth.onAuthStateChange((event)=>{
+      if (event==="SIGNED_OUT") setProf(null);
     });
     return ()=>subscription.unsubscribe();
   },[]);
