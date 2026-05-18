@@ -756,7 +756,7 @@ function AdminContests({ showToast }) {
     const [{data:c},{data:d},{data:u}] = await Promise.all([
       sb.from("contests").select("*, contest_domains(domain_id,task_count,domains(name)), contest_users(count)").order("created_at",{ascending:false}),
       sb.from("domains").select("id,name"),
-      sb.from("users").select("id,email,full_name").eq("role","participant").eq("status","active"),
+      sb.from("users").select("id,internal_id,email,full_name").eq("role","participant").eq("status","active").not("id","is",null),
     ]);
     setContests(c||[]); setDomains(d||[]); setUsers(u||[]); setLoad(false);
   }
@@ -935,7 +935,7 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
                   <label key={u.id} className="fx g3 ac" style={{padding:"6px 8px",cursor:"pointer",borderRadius:6}}>
                     <input type="checkbox" checked={selU.includes(u.id)} onChange={ev=>setSelU(p=>ev.target.checked?[...p,u.id]:p.filter(id=>id!==u.id))}/>
                     <span className="sm">{u.full_name||u.email}</span>
-                    <span className="xs m3" style={{marginLeft:"auto"}}>{u.full_name?u.email:""}</span>
+                    <span className="xs m3" style={{marginLeft:"auto"}}>{u.full_name?u.email:""}{!u.id&&<span style={{color:"var(--amber)",marginLeft:4}}>(not signed up yet)</span>}</span>
                   </label>
                 ))}
                 {users.length===0&&<div className="xs m3" style={{padding:8}}>No participants yet. Add users first.</div>}
@@ -993,13 +993,18 @@ function AssignModal({ contest, users, onClose, onSaved }) {
         </div>
         {mode==="sel" ? (
           <div style={{maxHeight:280,overflowY:"auto",background:"var(--bg3)",borderRadius:"var(--r)",padding:8,marginBottom:14,border:"1px solid var(--border)"}}>
-            {users.map(u=>(
+            {users.filter(u=>u.id).map(u=>(
               <label key={u.id} className="fx g3 ac" style={{padding:"7px 8px",cursor:"pointer",borderRadius:6}}>
                 <input type="checkbox" checked={sel.includes(u.id)} onChange={ev=>setSel(p=>ev.target.checked?[...p,u.id]:p.filter(id=>id!==u.id))}/>
                 <span className="sm">{u.full_name||u.email}</span>
                 <span className="xs m3" style={{marginLeft:"auto"}}>{u.full_name?u.email:""}</span>
               </label>
             ))}
+            {users.filter(u=>!u.id).length>0&&(
+              <div className="xs m3" style={{padding:"8px",borderTop:"1px solid var(--border)",marginTop:4}}>
+                {users.filter(u=>!u.id).length} user(s) not yet signed up — they won't appear until they set their password.
+              </div>
+            )}
           </div>
         ) : (
           <div style={{marginBottom:14}}>
