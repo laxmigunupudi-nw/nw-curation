@@ -626,7 +626,7 @@ function AdminDomains({ showToast }) {
         field_name: String(r["Field Name"]).trim(),
         field_role: String(r["Field Role"]).trim(),
         input_type: String(r["Input Type"]||"as_is").trim(),
-        comparison_type: String(r["Comparison Type"]||"as_is").trim(),
+        comparison_type: String(r["Comparison Type"]||"as_is").trim().toLowerCase(),
         dropdown_values: r["Dropdown Values"]?String(r["Dropdown Values"]).trim():null,
         display_order: parseInt(r["Display Order"]||0),
       }));
@@ -1632,23 +1632,37 @@ export default function App() {
   const [prof,setProf]=useState(null);
   const [loading,setLoading]=useState(true);
 
+  async function loadProfile(userId) {
+    try {
+      const {data,error} = await sb.from("users").select("*").eq("id",userId).single();
+      if (error) { console.error("Profile load error:",error.message); return null; }
+      return data||null;
+    } catch(e) { console.error("Profile load exception:",e); return null; }
+  }
+
   useEffect(()=>{
-    sb.auth.getSession().then(async({data:{session}})=>{
+    // Set a hard timeout — if Supabase doesn't respond in 8s, show login
+    const timeout = setTimeout(()=>{ setLoading(false); }, 8000);
+
+    sb.auth.getSession().then(async({data:{session},error})=>{
+      clearTimeout(timeout);
+      if (error) { console.error("Session error:",error.message); setLoading(false); return; }
       if (session?.user) {
-        const {data}=await sb.from("users").select("*").eq("id",session.user.id).single();
-        setProf(data||null);
+        const p = await loadProfile(session.user.id);
+        setProf(p);
       }
       setLoading(false);
-    });
+    }).catch(e=>{ clearTimeout(timeout); console.error("getSession failed:",e); setLoading(false); });
+
     const {data:{subscription}}=sb.auth.onAuthStateChange(async(_,session)=>{
       if (session?.user) {
-        const {data}=await sb.from("users").select("*").eq("id",session.user.id).single();
-        setProf(data||null);
+        const p = await loadProfile(session.user.id);
+        setProf(p);
       } else {
         setProf(null);
       }
     });
-    return ()=>subscription.unsubscribe();
+    return ()=>{ clearTimeout(timeout); subscription.unsubscribe(); };
   },[]);
 
   async function logout() { await sb.auth.signOut(); setProf(null); }
