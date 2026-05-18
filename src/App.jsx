@@ -223,9 +223,12 @@ function LoginPage({ onLogin }) {
     e.preventDefault(); setLoad(true); setErr("");
     const {data,error} = await sb.auth.signInWithPassword({email:email.trim(),password:pw});
     if (error) { setErr(error.message); setLoad(false); return; }
-    const {data:u} = await sb.from("users").select("*").eq("id",data.user.id).single();
-    if (u?.status==="disabled") { await sb.auth.signOut(); setErr("Account disabled. Contact admin."); setLoad(false); return; }
+    // Small delay to ensure session is fully established before querying
+    await new Promise(r=>setTimeout(r,300));
+    const {data:u, error:ue} = await sb.from("users").select("*").eq("id",data.user.id).single();
+    if (ue) { setErr("Profile load failed: " + ue.message); setLoad(false); return; }
     if (!u) { setErr("User profile not found. Contact admin."); setLoad(false); return; }
+    if (u.status==="disabled") { await sb.auth.signOut(); setErr("Account disabled. Contact admin."); setLoad(false); return; }
     onLogin(u); setLoad(false);
   }
 
