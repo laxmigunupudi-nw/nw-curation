@@ -1567,7 +1567,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const task=tasks[cur.id]; const ta=answers[task?.id]||{}; const isSub=task?.status==="submitted";
   const ctx=af.filter(f=>f.field_role==="context"); // always show all context fields
   const imgs=af.filter(f=>f.field_role==="image");
-  const cure=af.filter(f=>f.field_role==="curate"&&(aa.length===0||aa.includes(f.field_name)));
+  const cure=af.filter(f=>f.field_role==="curate"&&(aa.length===0||aa.includes(f.field_name))&&String(di?.json_value?.[f.field_name]||"").trim()!=="");
 
   function tSt(item) { const t=tasks[item.id]; if(!t)return"ns"; if(t.status==="submitted")return"sb"; return"ip"; }
   const inc=items.filter(i=>!tasks[i.id]||tasks[i.id].status!=="submitted").length;
