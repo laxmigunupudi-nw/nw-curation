@@ -1067,18 +1067,26 @@ function AdminProgress() {
     if (!sel) return; setLoad(true);
     const con=contests.find(c=>c.id===sel);
     try {
+      // Fetch users separately — views don't support join syntax
+      const {data:allUsers} = await sb.from("users").select("id,email,full_name");
+      const userMap = {};
+      (allUsers||[]).forEach(u=>{ if(u.id) userMap[u.id]=u; });
+
       if (con?.mode==="assessment") {
         const [{data:p,error:pe},{data:f,error:fe}] = await Promise.all([
-          sb.from("v_user_contest_accuracy").select("*, users(email,full_name)").eq("contest_id",sel),
+          sb.from("v_user_contest_accuracy").select("*").eq("contest_id",sel),
           sb.from("v_field_accuracy").select("*").eq("contest_id",sel).order("field_accuracy_pct"),
         ]);
         if(pe) console.error("Progress error:",pe.message);
         if(fe) console.error("Field accuracy error:",fe.message);
-        setProgress(p||[]); setFa(f||[]);
+        // Attach user info manually
+        const enriched = (p||[]).map(row=>({...row, users: userMap[row.user_id]||null}));
+        setProgress(enriched); setFa(f||[]);
       } else {
-        const {data:p,error:pe}=await sb.from("v_practice_progress").select("*, users(email,full_name)").eq("contest_id",sel);
+        const {data:p,error:pe}=await sb.from("v_practice_progress").select("*").eq("contest_id",sel);
         if(pe) console.error("Practice progress error:",pe.message);
-        setProgress(p||[]); setFa([]);
+        const enriched = (p||[]).map(row=>({...row, users: userMap[row.user_id]||null}));
+        setProgress(enriched); setFa([]);
       }
     } catch(e) { console.error("loadP exception:",e); }
     setLoad(false);
