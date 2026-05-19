@@ -875,16 +875,12 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
         const {data:fu}=await sb.from("users").select("id,email").in("email",em);
         uids=[...new Set([...uids,...(fu||[]).map(u=>u.id||u.email).filter(Boolean)])];
       }
-      // Separate signed-up users (uuid) from pending (email strings)
+      // Separate signed-up users (have auth uuid) from pending (no auth yet)
       const signedUpIds = uids.filter(u=>u&&u.includes("-")&&u.length===36);
       const pendingEmails = uids.filter(u=>u&&u.includes("@"));
       if (signedUpIds.length>0) await sb.from("contest_users").insert(signedUpIds.map(uid2=>({contest_id:con.id,user_id:uid2})));
-      // For pending users, store their assignment so when they sign up the trigger links them
-      if (pendingEmails.length>0) {
-        const {data:pendingUsers}=await sb.from("users").select("id,email").in("email",pendingEmails);
-        const withId=pendingUsers?.filter(u=>u.id)||[];
-        if (withId.length>0) await sb.from("contest_users").insert(withId.map(u=>({contest_id:con.id,user_id:u.id})));
-      }
+      // Store pending users by email — contest_users.pending_email column
+      if (pendingEmails.length>0) await sb.from("contest_users").insert(pendingEmails.map(email=>({contest_id:con.id,pending_email:email})));
       onDone();
     } catch(er) { setErr(er.message); }
     setSaving(false);
@@ -999,10 +995,13 @@ function AssignModal({ contest, users, onClose, onSaved }) {
       const {data}=await sb.from("users").select("id").in("email",em);
       toAdd=[...new Set([...toAdd,...(data||[]).map(u=>u.id).filter(Boolean)])];
     }
-    const newIds=toAdd.filter(id=>!assigned.includes(id));
-    if (newIds.length>0) await sb.from("contest_users").insert(newIds.map(uid=>({contest_id:contest.id,user_id:uid})));
+    const signedUp=toAdd.filter(u=>u&&u.includes("-")&&u.length===36);
+    const pending=toAdd.filter(u=>u&&u.includes("@"));
+    const newSU=signedUp.filter(id=>!assigned.includes(id));
+    const newP=pending.filter(e=>!assigned.includes(e));
+    if(newSU.length>0) await sb.from("contest_users").insert(newSU.map(uid=>({contest_id:contest.id,user_id:uid})));
+    if(newP.length>0) await sb.from("contest_users").insert(newP.map(email=>({contest_id:contest.id,pending_email:email})));
     const rem=assigned.filter(id=>!toAdd.includes(id));
-    if (rem.length>0) await sb.from("contest_users").delete().eq("contest_id",contest.id).in("user_id",rem);
     onSaved(); setSaving(false);
   }
   return (
