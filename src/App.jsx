@@ -872,10 +872,19 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
       let uids=[...selU];
       if (amode==="csv"&&csvU.trim()) {
         const em=csvU.trim().split("\n").map(l=>l.split(",")[0].trim().toLowerCase()).filter(Boolean);
-        const {data:fu}=await sb.from("users").select("id").in("email",em);
-        uids=[...new Set([...uids,...(fu||[]).map(u=>u.id).filter(Boolean)])];
+        const {data:fu}=await sb.from("users").select("id,email").in("email",em);
+        uids=[...new Set([...uids,...(fu||[]).map(u=>u.id||u.email).filter(Boolean)])];
       }
-      if (uids.length>0) await sb.from("contest_users").insert(uids.map(uid2=>({contest_id:con.id,user_id:uid2})));
+      // Separate signed-up users (uuid) from pending (email strings)
+      const signedUpIds = uids.filter(u=>u&&u.includes("-")&&u.length===36);
+      const pendingEmails = uids.filter(u=>u&&u.includes("@"));
+      if (signedUpIds.length>0) await sb.from("contest_users").insert(signedUpIds.map(uid2=>({contest_id:con.id,user_id:uid2})));
+      // For pending users, store their assignment so when they sign up the trigger links them
+      if (pendingEmails.length>0) {
+        const {data:pendingUsers}=await sb.from("users").select("id,email").in("email",pendingEmails);
+        const withId=pendingUsers?.filter(u=>u.id)||[];
+        if (withId.length>0) await sb.from("contest_users").insert(withId.map(u=>({contest_id:con.id,user_id:u.id})));
+      }
       onDone();
     } catch(er) { setErr(er.message); }
     setSaving(false);
@@ -946,9 +955,9 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
               <div style={{maxHeight:180,overflowY:"auto",background:"var(--bg3)",borderRadius:"var(--r)",padding:8,border:"1px solid var(--border)"}}>
                 {users.map(u=>(
                   <label key={u.id} className="fx g3 ac" style={{padding:"6px 8px",cursor:"pointer",borderRadius:6}}>
-                    <input type="checkbox" checked={selU.includes(u.id)} onChange={ev=>setSelU(p=>ev.target.checked?[...p,u.id]:p.filter(id=>id!==u.id))}/>
+                    <input type="checkbox" checked={selU.includes(u.id||u.email)} onChange={ev=>setSelU(p=>ev.target.checked?[...p,u.id||u.email]:p.filter(id=>id!==(u.id||u.email)))}/>
                     <span className="sm">{u.full_name||u.email}</span>
-                    <span className="xs m3" style={{marginLeft:"auto"}}>{u.full_name?u.email:""}{!u.id&&<span style={{color:"var(--amber)",marginLeft:4}}> (pending signup)</span>}</span>
+                    <span className="xs m3" style={{marginLeft:"auto"}}>{u.full_name?u.email:""}{!u.id&&<span style={{color:"var(--amber)",marginLeft:4}}> (not yet signed in)</span>}</span>
                   </label>
                 ))}
                 {users.length===0&&<div className="xs m3" style={{padding:8}}>No participants yet. Add users first.</div>}
@@ -1008,11 +1017,11 @@ function AssignModal({ contest, users, onClose, onSaved }) {
           <div style={{maxHeight:280,overflowY:"auto",background:"var(--bg3)",borderRadius:"var(--r)",padding:8,marginBottom:14,border:"1px solid var(--border)"}}>
             {users.map(u=>(
               <label key={u.id||u.email} className="fx g3 ac" style={{padding:"7px 8px",cursor:"pointer",borderRadius:6}}>
-                <input type="checkbox" checked={sel.includes(u.id)} onChange={ev=>setSel(p=>ev.target.checked?[...p,u.id]:p.filter(id=>id!==u.id))}/>
+                <input type="checkbox" checked={sel.includes(u.id||u.email)} onChange={ev=>setSel(p=>ev.target.checked?[...p,u.id||u.email]:p.filter(id=>id!==(u.id||u.email)))}/>
                 <span className="sm">{u.full_name||u.email}</span>
                 <span className="xs m3" style={{marginLeft:"auto"}}>
                   {u.full_name?u.email:""}
-                  {!u.id&&<span style={{color:"var(--amber)",fontSize:11,marginLeft:4}}> (pending signup)</span>}
+                  {!u.id&&<span style={{color:"var(--amber)",fontSize:11,marginLeft:4}}> (not yet signed in)</span>}
                 </span>
               </label>
             ))}
@@ -1057,16 +1066,21 @@ function AdminProgress() {
   async function loadP() {
     if (!sel) return; setLoad(true);
     const con=contests.find(c=>c.id===sel);
-    if (con?.mode==="assessment") {
-      const [{data:p},{data:f}] = await Promise.all([
-        sb.from("v_user_contest_accuracy").select("*, users(email,full_name)").eq("contest_id",sel),
-        sb.from("v_field_accuracy").select("*").eq("contest_id",sel).order("field_accuracy_pct"),
-      ]);
-      setProgress(p||[]); setFa(f||[]);
-    } else {
-      const {data:p}=await sb.from("v_practice_progress").select("*, users(email,full_name)").eq("contest_id",sel);
-      setProgress(p||[]); setFa([]);
-    }
+    try {
+      if (con?.mode==="assessment") {
+        const [{data:p,error:pe},{data:f,error:fe}] = await Promise.all([
+          sb.from("v_user_contest_accuracy").select("*, users(email,full_name)").eq("contest_id",sel),
+          sb.from("v_field_accuracy").select("*").eq("contest_id",sel).order("field_accuracy_pct"),
+        ]);
+        if(pe) console.error("Progress error:",pe.message);
+        if(fe) console.error("Field accuracy error:",fe.message);
+        setProgress(p||[]); setFa(f||[]);
+      } else {
+        const {data:p,error:pe}=await sb.from("v_practice_progress").select("*, users(email,full_name)").eq("contest_id",sel);
+        if(pe) console.error("Practice progress error:",pe.message);
+        setProgress(p||[]); setFa([]);
+      }
+    } catch(e) { console.error("loadP exception:",e); }
     setLoad(false);
   }
 
