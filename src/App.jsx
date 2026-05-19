@@ -1628,7 +1628,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             <div className="fx g3 wrap" style={{marginBottom:12}}>
               {imgs.slice(0,6).map(f=>{
                 const url=di?.json_value?.[f.field_name];
-                const fullUrl = url.replace(/[?&](odnHeight|odnWidth|odnBg)=[^&]*/g,'').replace(/[?&]$/,'');
+                const fullUrl = url ? url.replace(/[?&](odnHeight|odnWidth|odnBg)=[^&]*/g,"").replace(/[?&]$/,"") : null;
                 return url?<img key={f.field_name} src={url} alt="" className="imt"
                   style={{cursor:"pointer"}}
                   onClick={()=>window.open(fullUrl,"_blank")}
