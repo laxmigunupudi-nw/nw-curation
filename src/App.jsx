@@ -1091,6 +1091,42 @@ function AdminProgress() {
     setLoad(false);
   }
 
+  function downloadCSV() {
+    const con = contests.find(c=>c.id===sel);
+    if (!progress.length) return;
+    let csv, filename;
+    if (con?.mode==="assessment") {
+      const headers = ["Name","Email","Tasks Done","Total Attributes","Correct Attributes","Accuracy %","Certification"];
+      const rows = progress.map(p=>[
+        p.users?.full_name||"",
+        p.users?.email||"",
+        p.tasks_submitted||0,
+        p.total_attributes||0,
+        p.correct_attributes||0,
+        p.accuracy_pct||0,
+        p.cert_level||"",
+      ]);
+      csv = [headers, ...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+      filename = `${con.name}_results.csv`;
+    } else {
+      const headers = ["Name","Email","Tasks Completed","Total Tasks"];
+      const rows = progress.map(p=>[
+        p.users?.full_name||"",
+        p.users?.email||"",
+        p.tasks_completed||0,
+        p.total_tasks||0,
+      ]);
+      csv = [headers, ...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+      filename = `${con.name}_practice_progress.csv`;
+    }
+    const blob = new Blob([csv], {type:"text/csv"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+
   const con=contests.find(c=>c.id===sel);
 
   return (
@@ -1107,12 +1143,19 @@ function AdminProgress() {
       {!sel&&<div className="card" style={{textAlign:"center",color:"var(--text3)",padding:40}}>Select a contest above to see progress</div>}
       {sel&&(
         <>
-          {con?.mode==="assessment"&&(
-            <div className="tabs" style={{maxWidth:300}}>
-              <div className={`tab ${tab==="users"?"act":""}`} style={{flex:1,textAlign:"center"}} onClick={()=>setTab("users")}>Per user</div>
-              <div className={`tab ${tab==="fields"?"act":""}`} style={{flex:1,textAlign:"center"}} onClick={()=>setTab("fields")}>Field heatmap</div>
-            </div>
-          )}
+          <div className="fx ac jb" style={{marginBottom:4}}>
+            {con?.mode==="assessment"?(
+              <div className="tabs" style={{maxWidth:300,marginBottom:0}}>
+                <div className={`tab ${tab==="users"?"act":""}`} style={{flex:1,textAlign:"center"}} onClick={()=>setTab("users")}>Per user</div>
+                <div className={`tab ${tab==="fields"?"act":""}`} style={{flex:1,textAlign:"center"}} onClick={()=>setTab("fields")}>Field heatmap</div>
+              </div>
+            ):<div/>}
+            {progress.length>0&&(
+              <button className="bg bsm" onClick={downloadCSV} style={{whiteSpace:"nowrap"}}>
+                ↓ Download CSV
+              </button>
+            )}
+          </div>
           {load ? <div style={{textAlign:"center",padding:40}}><span className="sp"/></div> : (
             <>
               {(tab==="users"||con?.mode==="practice")&&(
