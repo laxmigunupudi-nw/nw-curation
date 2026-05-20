@@ -420,6 +420,8 @@ function AdminUsers({ showToast }) {
       if (userTasks?.length>0) await sb.from("responses").delete().in("task_id",userTasks.map(t=>t.id));
       await sb.from("tasks").delete().eq("user_id",u.id);
       await sb.from("contest_users").delete().eq("user_id",u.id);
+      // Delete from auth.users via security definer function
+      await sb.rpc("delete_auth_user", {user_id: u.id});
     }
     const {error} = await sb.from("users").delete().eq("email",u.email);
     if (error) { showToast("Delete failed: "+error.message,"error"); return; }
@@ -945,6 +947,7 @@ function AssignModal({ contest, users, onClose, onSaved }) {
     if(newSU.length>0) await sb.from("contest_users").insert(newSU.map(uid=>({contest_id:contest.id,user_id:uid})));
     if(newP.length>0) await sb.from("contest_users").insert(newP.map(email=>({contest_id:contest.id,pending_email:email})));
     const rem=assigned.filter(id=>!toAdd.includes(id));
+    if(rem.length>0) await sb.from("contest_users").delete().eq("contest_id",contest.id).in("user_id",rem);
     onSaved(); setSaving(false);
   }
   return (
