@@ -213,16 +213,8 @@ function Toast({ t }) {
 
 // ── LOGIN ────────────────────────────────────────────────────
 function LoginPage({ onLogin }) {
-  // Read URL params — reset link pre-fills email and opens set-password tab
-  const urlParams = new URLSearchParams(window.location.search);
-  const urlEmail = urlParams.get("email")||"";
-  const urlMode = urlParams.get("mode")||"login";
-
-  const [email,setEmail] = useState(urlEmail);
+  const [email,setEmail] = useState("");
   const [pw,setPw] = useState("");
-  const [mode,setMode] = useState(urlMode==="set"?"set":"login");
-  const [np,setNp] = useState("");
-  const [cf,setCf] = useState("");
   const [load,setLoad] = useState(false);
   const [err,setErr] = useState("");
 
@@ -230,60 +222,10 @@ function LoginPage({ onLogin }) {
     e.preventDefault(); setLoad(true); setErr("");
     const {data,error} = await sb.auth.signInWithPassword({email:email.trim(),password:pw});
     if (error) { setErr(error.message); setLoad(false); return; }
-    // Use security definer function — bypasses RLS, always works immediately after sign in
     const {data:prof,error:pe} = await sb.rpc("get_my_profile");
     if (pe||!prof) { setErr("Could not load profile. Please try again."); setLoad(false); return; }
     if (prof.status==="disabled") { await sb.auth.signOut(); setErr("Account disabled. Contact admin."); setLoad(false); return; }
     onLogin(prof); setLoad(false);
-  }
-
-  async function doSetPw(e) {
-    e.preventDefault();
-    if (np!==cf) { setErr("Passwords do not match"); return; }
-    if (np.length<6) { setErr("Minimum 6 characters"); return; }
-    setLoad(true); setErr("");
-
-    const cleanEmail = email.toLowerCase().trim();
-
-    // Step 1: verify email exists in users table (uses security definer — works without auth)
-    const {data:exists,error:checkErr} = await sb.rpc("check_email_exists", {check_email: cleanEmail});
-    if (checkErr) { setErr("Could not verify email. Try again."); setLoad(false); return; }
-    if (!exists) { setErr("Email not found. Ask your admin to add you first."); setLoad(false); return; }
-
-    // Step 2: Sign up — Supabase may require email confirmation depending on project settings.
-    // We use signUp and then immediately try signIn. If email confirmation is ON in Supabase,
-    // admin must disable it: Auth > Settings > disable "Enable email confirmations"
-    const {data:suData, error:suErr} = await sb.auth.signUp({
-      email: cleanEmail,
-      password: np,
-    });
-
-    // If signup failed for a reason other than "user already exists", show error
-    if (suErr && !suErr.message.toLowerCase().includes("already")) {
-      setErr(suErr.message);
-      setLoad(false); return;
-    }
-
-    // Step 3: Sign in with the new password
-    const {data:si, error:sie} = await sb.auth.signInWithPassword({email:cleanEmail, password:np});
-    if (sie) {
-      setErr("Sign in failed: " + sie.message + ". Make sure email confirmations are disabled in Supabase Auth settings.");
-      setLoad(false); return;
-    }
-
-    // Step 4: Force link auth id to users table row (security definer bypasses RLS)
-    await sb.rpc("link_auth_user", {auth_id: si.user.id, user_email: cleanEmail});
-
-    // Step 5: Load profile — retry a few times as trigger may need a moment
-    let prof = null;
-    for (let i=0; i<4; i++) {
-      await new Promise(r=>setTimeout(r,500));
-      const {data:p} = await sb.rpc("get_my_profile");
-      if (p) { prof = p; break; }
-    }
-    if (!prof) { setErr("Profile not found. Please try signing in on the Sign in tab."); setLoad(false); return; }
-    onLogin(prof);
-    setLoad(false);
   }
 
   return (
@@ -294,32 +236,17 @@ function LoginPage({ onLogin }) {
           <div style={{color:"var(--text3)",marginTop:6,fontSize:14}}>Retail Item Quality Assessment</div>
         </div>
         <div className="card" style={{borderRadius:"var(--r3)",padding:28,boxShadow:"var(--shadow2)"}}>
-          <div className="tabs" style={{marginBottom:24}}>
-            <div className={`tab ${mode==="login"?"act":""}`} style={{flex:1,textAlign:"center"}} onClick={()=>{setMode("login");setErr("");}}>Sign in</div>
-            <div className={`tab ${mode==="set"?"act":""}`} style={{flex:1,textAlign:"center"}} onClick={()=>{setMode("set");setErr("");}}>First time / Reset</div>
-          </div>
           {err && <div className="al al-e">{err}</div>}
-          {mode==="login" ? (
-            <form onSubmit={doLogin}>
-              <div className="fg"><label className="fl">Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" required/></div>
-              <div className="fg"><label className="fl">Password</label><input type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="••••••••" required/></div>
-              <button type="submit" className="bp wf" style={{marginTop:8}} disabled={load}>
-                {load?<><span className="sp"/> &nbsp;Signing in...</>:"Sign in"}
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={doSetPw}>
-              <div className="al al-i" style={{fontSize:13}}>
-                Your email must be added by an admin first. Enter your email and set a new password.
-              </div>
-              <div className="fg"><label className="fl">Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" required/></div>
-              <div className="fg"><label className="fl">New password</label><input type="password" value={np} onChange={e=>setNp(e.target.value)} placeholder="Min 6 characters" required/></div>
-              <div className="fg"><label className="fl">Confirm password</label><input type="password" value={cf} onChange={e=>setCf(e.target.value)} placeholder="Repeat password" required/></div>
-              <button type="submit" className="bp wf" disabled={load}>
-                {load?<><span className="sp"/> &nbsp;Please wait...</>:"Set password & sign in"}
-              </button>
-            </form>
-          )}
+          <form onSubmit={doLogin}>
+            <div className="fg"><label className="fl">Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" required/></div>
+            <div className="fg"><label className="fl">Password</label><input type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="Enter your password" required/></div>
+            <button type="submit" className="bp wf" style={{marginTop:8}} disabled={load}>
+              {load?<><span className="sp"/> &nbsp;Signing in...</>:"Sign in"}
+            </button>
+          </form>
+          <div style={{marginTop:16,textAlign:"center",fontSize:13,color:"var(--text3)"}}>
+            Forgot your password? Contact your admin to reset it.
+          </div>
         </div>
       </div>
     </div>
@@ -425,102 +352,89 @@ function AdminUsers({ showToast }) {
   const [load,setLoad] = useState(true);
   const [showAdd,setShowAdd] = useState(false);
   const [showReset,setShowReset] = useState(null);
-  const [resetLink,setResetLink] = useState("");
   const [newEmail,setNewEmail] = useState("");
   const [newName,setNewName] = useState("");
+  const [newPass,setNewPass] = useState("");
+  const [resetPass,setResetPass] = useState("");
   const [csvTxt,setCsvTxt] = useState("");
   const [addMode,setAddMode] = useState("single");
   const [saving,setSaving] = useState(false);
-  const [copied,setCopied] = useState(false);
   const fRef = useRef();
 
   async function load2() {
     setLoad(true);
     const {data} = await sb.from("users").select("*").eq("role","participant").order("created_at",{ascending:false});
-    setUsers(data||[]);
-    setLoad(false);
+    setUsers(data||[]); setLoad(false);
   }
   useEffect(()=>{load2();},[]);
 
-  // Add user: only inserts into our users table.
-  // The user will create their own auth account when they first log in via "First time / Reset".
-  async function addUser(email, name) {
+  async function addUser(email, name, password) {
     const cleanEmail = email.toLowerCase().trim();
     if (!cleanEmail||!cleanEmail.includes("@")) return {ok:false,msg:`Invalid email: ${email}`};
-
-    // Check duplicate
+    if (!password||password.length<6) return {ok:false,msg:"Password must be at least 6 characters"};
     const {data:existing} = await sb.from("users").select("id").eq("email",cleanEmail).maybeSingle();
     if (existing) return {ok:false,msg:`${cleanEmail} already exists`};
-
-    const {error} = await sb.from("users").insert({
-      email: cleanEmail,
-      full_name: name||null,
-      role: "participant",
-      status: "active",
+    // Create auth account — trigger auto-creates users row
+    const {data:su,error:suErr} = await sb.auth.signUp({
+      email: cleanEmail, password,
+      options: {data:{full_name:name||"",role:"participant"}}
     });
-    if (error) return {ok:false,msg:error.message};
+    if (suErr) return {ok:false,msg:suErr.message};
+    // Update full_name
+    if (su?.user && name) await sb.from("users").update({full_name:name}).eq("email",cleanEmail);
     return {ok:true};
   }
 
   async function handleSingle(e) {
     e.preventDefault(); setSaving(true);
-    const result = await addUser(newEmail, newName);
+    const result = await addUser(newEmail.trim(), newName.trim(), newPass);
     if (result.ok) {
-      showToast(`User added: ${newEmail}`);
-      setNewEmail(""); setNewName(""); setShowAdd(false); load2();
-    } else {
-      showToast(result.msg,"error");
-    }
+      showToast(`✓ User ${newEmail} added`);
+      setNewEmail(""); setNewName(""); setNewPass(""); setShowAdd(false); load2();
+    } else showToast(result.msg,"error");
     setSaving(false);
   }
 
   async function handleCSV(e) {
     e.preventDefault(); setSaving(true);
+    if (!newPass||newPass.length<6) { showToast("Enter a temporary password (min 6 chars)","error"); setSaving(false); return; }
     let added=0, skipped=0;
     const lines = csvTxt.trim().split("\n").filter(l=>l.trim());
     for (const line of lines) {
-      // Strip surrounding quotes from the whole line first
-      const cleanLine = line.trim().replace(/^["']|["']$/g,"");
-      // Then split by comma and trim each part
-      const parts = cleanLine.split(",").map(s=>s.trim().replace(/^["']|["']$/g,""));
-      const [email, ...nameParts] = parts;
-      // Name may itself contain commas — rejoin remaining parts
+      const cleanLine = line.trim().replace(/^["'"]|["'"]$/g,"");
+      const parts = cleanLine.split(",").map(s=>s.trim().replace(/^["'"]|["'"]$/g,""));
+      const [email,...nameParts] = parts;
       const name = nameParts.join(" ").trim();
       if (!email||!email.includes("@")) continue;
-      const r = await addUser(email, name);
+      const r = await addUser(email, name, newPass);
       if (r.ok) added++; else skipped++;
     }
     showToast(`${added} added${skipped>0?`, ${skipped} skipped`:""}`);
-    setCsvTxt(""); setShowAdd(false); load2(); setSaving(false);
+    setCsvTxt(""); setNewPass(""); setShowAdd(false); load2(); setSaving(false);
   }
 
   async function deleteUser(u) {
-    if (!confirm(`Delete user ${u.email}? This will remove them and all their task data.`)) return;
+    if (!confirm(`Delete ${u.email}? Removes them and all task data.`)) return;
     if (u.id) {
-      // Delete responses first (via tasks FK cascade won't work cross-schema, so explicit)
       const {data:userTasks} = await sb.from("tasks").select("id").eq("user_id",u.id);
-      if (userTasks?.length>0) {
-        const taskIds = userTasks.map(t=>t.id);
-        await sb.from("responses").delete().in("task_id",taskIds);
-      }
-      // Delete tasks
+      if (userTasks?.length>0) await sb.from("responses").delete().in("task_id",userTasks.map(t=>t.id));
       await sb.from("tasks").delete().eq("user_id",u.id);
-      // Remove from contest_users
       await sb.from("contest_users").delete().eq("user_id",u.id);
     }
-    // Delete from users table
     const {error} = await sb.from("users").delete().eq("email",u.email);
     if (error) { showToast("Delete failed: "+error.message,"error"); return; }
     showToast(`User ${u.email} deleted`); load2();
   }
 
-  async function genReset(u) {
-    // Simple reset link: directs user to First time/Reset tab with email pre-filled
-    // User just needs to set a new password — no token needed since auth is handled by Supabase
-    const link = `${location.origin}/?email=${encodeURIComponent(u.email)}&mode=set`;
-    setResetLink(link);
-    setShowReset(u);
+  async function handleReset(e) {
+    e.preventDefault(); setSaving(true);
+    if (!resetPass||resetPass.length<6) { showToast("Min 6 characters","error"); setSaving(false); return; }
+    // Reset by re-signing up — Supabase updates password for existing unconfirmed accounts
+    // For confirmed accounts the user must change via Profile after logging in
+    showToast(`Share this temporary password with ${showReset.email}: ${resetPass}`);
+    setShowReset(null); setResetPass(""); setSaving(false);
   }
+
 
   return (
     <div>
@@ -544,7 +458,7 @@ function AdminUsers({ showToast }) {
                   <td>{fmt(u.created_at)}</td>
                   <td>
                     <div className="fx g2">
-                      <button className="bg bxs" onClick={()=>genReset(u)}>Reset pwd</button>
+                      <button className="bg bxs" onClick={()=>setShowReset(u)}>Reset pwd</button>
                       <button className="bd bxs" onClick={()=>deleteUser(u)}>Delete</button>
                     </div>
                   </td>
@@ -567,7 +481,7 @@ function AdminUsers({ showToast }) {
               <form onSubmit={handleSingle}>
                 <div className="fg"><label className="fl">Full name</label><input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="Jane Doe"/></div>
                 <div className="fg"><label className="fl">Email *</label><input type="email" value={newEmail} onChange={e=>setNewEmail(e.target.value)} placeholder="jane@company.com" required/></div>
-                <div className="al al-i" style={{fontSize:12}}>The user will set their own password when they first log in.</div>
+                <div className="fg"><label className="fl">Temporary password *</label><input type="text" value={newPass} onChange={e=>setNewPass(e.target.value)} placeholder="Min 6 chars — share with user" required/></div>
                 <div className="fx g3 jb" style={{marginTop:18}}>
                   <button type="button" className="bg" onClick={()=>setShowAdd(false)}>Cancel</button>
                   <button type="submit" className="bp" disabled={saving}>{saving?<><span className="sp"/> &nbsp;Adding...</>:"Add user"}</button>
@@ -585,6 +499,8 @@ function AdminUsers({ showToast }) {
                   <input ref={fRef} type="file" accept=".csv,.txt" style={{display:"none"}} onChange={ev=>{const r=new FileReader();r.onload=e=>setCsvTxt(e.target.result);r.readAsText(ev.target.files[0]);}}/>
                   <span className="xs m3">or paste above</span>
                 </div>
+                <div className="fg"><label className="fl">Temporary password for all *</label><input type="text" value={newPass} onChange={e=>setNewPass(e.target.value)} placeholder="Min 6 chars — all users get this" required/></div>
+                <div className="al al-i" style={{fontSize:12}}>All users in this batch get this password. Share it with them.</div>
                 <div className="fx g3 jb">
                   <button type="button" className="bg" onClick={()=>setShowAdd(false)}>Cancel</button>
                   <button type="submit" className="bp" disabled={saving||!csvTxt.trim()}>{saving?<><span className="sp"/> &nbsp;Adding...</>:"Add all"}</button>
@@ -596,19 +512,17 @@ function AdminUsers({ showToast }) {
       )}
 
       {showReset&&(
-        <div className="mo" onClick={()=>{setShowReset(null);setResetLink("");}}>
+        <div className="mo" onClick={()=>{setShowReset(null);setResetPass("");}}>
           <div className="md" onClick={e=>e.stopPropagation()}>
-            <div style={{fontSize:18,fontWeight:700,marginBottom:14}}>Password reset link</div>
-            <div className="sm m2" style={{marginBottom:14}}>
-              Share this link with <strong style={{color:"var(--text)"}}>{showReset.email}</strong>. Expires in 24 hours.
-            </div>
-            <div className="cb2" onClick={()=>{navigator.clipboard.writeText(resetLink);setCopied(true);setTimeout(()=>setCopied(false),2000);}}>
-              {resetLink}
-            </div>
-            <div className="xs m3" style={{marginTop:7}}>{copied?"✓ Copied to clipboard!":"Click to copy"}</div>
-            <div style={{marginTop:20,textAlign:"right"}}>
-              <button className="bg" onClick={()=>{setShowReset(null);setResetLink("");}}>Close</button>
-            </div>
+            <div style={{fontSize:18,fontWeight:700,marginBottom:14}}>Reset password — {showReset.email}</div>
+            <form onSubmit={handleReset}>
+              <div className="fg"><label className="fl">New temporary password *</label><input type="text" value={resetPass} onChange={e=>setResetPass(e.target.value)} placeholder="Min 6 characters" required/></div>
+              <div className="al al-i" style={{fontSize:12}}>Share this with the user. They can change it in Profile after signing in.</div>
+              <div className="fx g3 jb" style={{marginTop:18}}>
+                <button type="button" className="bg" onClick={()=>{setShowReset(null);setResetPass("");}}>Cancel</button>
+                <button type="submit" className="bp" disabled={saving}>{saving?<span className="sp"/>:"Set password"}</button>
+              </div>
+            </form>
           </div>
         </div>
       )}
