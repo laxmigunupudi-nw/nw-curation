@@ -479,9 +479,14 @@ function AdminUsers({ showToast }) {
     let added=0, skipped=0;
     const lines = csvTxt.trim().split("\n").filter(l=>l.trim());
     for (const line of lines) {
-      // Strip surrounding quotes from CSV fields (handles "email","name" format)
-      const parts = line.split(",").map(s=>s.trim().replace(/^["']|["']$/g,""));
-      const [email, name=""] = parts;
+      // Strip surrounding quotes from the whole line first
+      const cleanLine = line.trim().replace(/^["']|["']$/g,"");
+      // Then split by comma and trim each part
+      const parts = cleanLine.split(",").map(s=>s.trim().replace(/^["']|["']$/g,""));
+      const [email, ...nameParts] = parts;
+      // Name may itself contain commas — rejoin remaining parts
+      const name = nameParts.join(" ").trim();
+      if (!email||!email.includes("@")) continue;
       const r = await addUser(email, name);
       if (r.ok) added++; else skipped++;
     }
