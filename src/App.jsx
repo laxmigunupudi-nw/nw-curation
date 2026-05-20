@@ -490,13 +490,22 @@ function AdminUsers({ showToast }) {
   }
 
   async function deleteUser(u) {
-    if (!confirm(`Delete user ${u.email}? This will remove them from all contests.`)) return;
-    // Remove from contest_users first
-    if (u.id) await sb.from("contest_users").delete().eq("user_id",u.id);
+    if (!confirm(`Delete user ${u.email}? This will remove them and all their task data.`)) return;
+    if (u.id) {
+      // Delete responses first (via tasks FK cascade won't work cross-schema, so explicit)
+      const {data:userTasks} = await sb.from("tasks").select("id").eq("user_id",u.id);
+      if (userTasks?.length>0) {
+        const taskIds = userTasks.map(t=>t.id);
+        await sb.from("responses").delete().in("task_id",taskIds);
+      }
+      // Delete tasks
+      await sb.from("tasks").delete().eq("user_id",u.id);
+      // Remove from contest_users
+      await sb.from("contest_users").delete().eq("user_id",u.id);
+    }
     // Delete from users table
     const {error} = await sb.from("users").delete().eq("email",u.email);
     if (error) { showToast("Delete failed: "+error.message,"error"); return; }
-    // Delete from auth if they have an account
     showToast(`User ${u.email} deleted`); load2();
   }
 
