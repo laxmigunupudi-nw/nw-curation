@@ -213,9 +213,14 @@ function Toast({ t }) {
 
 // ── LOGIN ────────────────────────────────────────────────────
 function LoginPage({ onLogin }) {
-  const [email,setEmail] = useState("");
+  // Read URL params — reset link pre-fills email and opens set-password tab
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlEmail = urlParams.get("email")||"";
+  const urlMode = urlParams.get("mode")||"login";
+
+  const [email,setEmail] = useState(urlEmail);
   const [pw,setPw] = useState("");
-  const [mode,setMode] = useState("login");
+  const [mode,setMode] = useState(urlMode==="set"?"set":"login");
   const [np,setNp] = useState("");
   const [cf,setCf] = useState("");
   const [load,setLoad] = useState(false);
@@ -266,12 +271,17 @@ function LoginPage({ onLogin }) {
       setLoad(false); return;
     }
 
-    // Step 4: Link auth id to the users table row
+    // Step 4: Force link auth id to users table row (security definer bypasses RLS)
     await sb.rpc("link_auth_user", {auth_id: si.user.id, user_email: cleanEmail});
 
-    // Step 5: Load profile
-    const {data:prof} = await sb.from("users").select("*").eq("id",si.user.id).single();
-    if (!prof) { setErr("Profile not found after signup. Contact admin."); setLoad(false); return; }
+    // Step 5: Load profile — retry a few times as trigger may need a moment
+    let prof = null;
+    for (let i=0; i<4; i++) {
+      await new Promise(r=>setTimeout(r,500));
+      const {data:p} = await sb.rpc("get_my_profile");
+      if (p) { prof = p; break; }
+    }
+    if (!prof) { setErr("Profile not found. Please try signing in on the Sign in tab."); setLoad(false); return; }
     onLogin(prof);
     setLoad(false);
   }
@@ -469,25 +479,32 @@ function AdminUsers({ showToast }) {
     let added=0, skipped=0;
     const lines = csvTxt.trim().split("\n").filter(l=>l.trim());
     for (const line of lines) {
-      const [email,name=""] = line.split(",").map(s=>s.trim());
-      const r = await addUser(email,name);
+      // Strip surrounding quotes from CSV fields (handles "email","name" format)
+      const parts = line.split(",").map(s=>s.trim().replace(/^["']|["']$/g,""));
+      const [email, name=""] = parts;
+      const r = await addUser(email, name);
       if (r.ok) added++; else skipped++;
     }
     showToast(`${added} added${skipped>0?`, ${skipped} skipped`:""}`);
     setCsvTxt(""); setShowAdd(false); load2(); setSaving(false);
   }
 
-  async function toggle(u) {
-    const ns = u.status==="active"?"disabled":"active";
-    await sb.from("users").update({status:ns}).eq("id",u.id);
-    showToast(`User ${ns}`); load2();
+  async function deleteUser(u) {
+    if (!confirm(`Delete user ${u.email}? This will remove them from all contests.`)) return;
+    // Remove from contest_users first
+    if (u.id) await sb.from("contest_users").delete().eq("user_id",u.id);
+    // Delete from users table
+    const {error} = await sb.from("users").delete().eq("email",u.email);
+    if (error) { showToast("Delete failed: "+error.message,"error"); return; }
+    // Delete from auth if they have an account
+    showToast(`User ${u.email} deleted`); load2();
   }
 
   async function genReset(u) {
-    const token = Array.from(crypto.getRandomValues(new Uint8Array(20))).map(b=>b.toString(16).padStart(2,"0")).join("");
-    const {error} = await sb.from("password_reset_tokens").insert({user_id:u.id,token,expires_at:new Date(Date.now()+864e5).toISOString()});
-    if (error) { showToast("Failed to generate reset link","error"); return; }
-    setResetLink(`${location.origin}/?reset=${token}`);
+    // Simple reset link: directs user to First time/Reset tab with email pre-filled
+    // User just needs to set a new password — no token needed since auth is handled by Supabase
+    const link = `${location.origin}/?email=${encodeURIComponent(u.email)}&mode=set`;
+    setResetLink(link);
     setShowReset(u);
   }
 
@@ -514,9 +531,7 @@ function AdminUsers({ showToast }) {
                   <td>
                     <div className="fx g2">
                       <button className="bg bxs" onClick={()=>genReset(u)}>Reset pwd</button>
-                      <button className={`bxs ${u.status==="active"?"bd":"bg"}`} onClick={()=>toggle(u)}>
-                        {u.status==="active"?"Disable":"Enable"}
-                      </button>
+                      <button className="bd bxs" onClick={()=>deleteUser(u)}>Delete</button>
                     </div>
                   </td>
                 </tr>
@@ -1677,6 +1692,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       <div style={{flex:1,overflowY:"auto",padding:"20px 26px",background:"var(--bg)"}}>
         <div className="fx ac jb" style={{marginBottom:16}}>
           <div>
+            <button className="bg bxs" onClick={onClose} style={{marginBottom:6}}>← Back to contests</button>
             <div className="xs m3" style={{marginBottom:2}}>{contest.name} · {contest.mode}</div>
             <div className="fw6" style={{fontSize:16}}>Task {idx+1} of {items.length}{di?.category?` — ${di.category}`:""}</div>
           </div>
