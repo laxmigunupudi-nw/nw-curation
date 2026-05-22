@@ -408,6 +408,8 @@ function AdminUsers({ showToast }) {
       if (!email||!email.includes("@")) continue;
       const r = await addUser(email, name, newPass);
       if (r.ok) added++; else skipped++;
+      // Small delay to avoid Supabase rate limiting on rapid signups
+      await new Promise(res=>setTimeout(res, 800));
     }
     showToast(`${added} added${skipped>0?`, ${skipped} skipped`:""}`);
     setCsvTxt(""); setNewPass(""); setShowAdd(false); load2(); setSaving(false);
@@ -1394,10 +1396,30 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const [submitted,setSubmitted]=useState(false);
   const [score,setScore]=useState(null);
 
+  const [contestClosed,setContestClosed] = useState(contest.status==="closed");
+  const closingRef = useRef(false);
   // Ref to prevent concurrent ensureTask calls
   const creatingTask = useRef({});
 
   useEffect(()=>{ loadC(); },[]);
+
+  // Realtime: watch for contest status changes (admin closes contest)
+  useEffect(()=>{
+    const sub = sb.channel("contest-status-"+contest.id)
+      .on("postgres_changes",{
+        event:"UPDATE", schema:"public", table:"contests",
+        filter:`id=eq.${contest.id}`
+      }, async(payload)=>{
+        if (payload.new.status==="closed" && !closingRef.current) {
+          closingRef.current = true;
+          setContestClosed(true);
+          // Auto-submit all in-progress work
+          await autoSubmitAll();
+        }
+      })
+      .subscribe();
+    return ()=>sb.removeChannel(sub);
+  },[]);
 
   async function loadC() {
     try { await sb.rpc("close_expired_contests"); } catch(e) {}
@@ -1488,6 +1510,39 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     setShowVal(true);
   }
 
+  // Silent auto-submit — called when admin closes contest
+  async function autoSubmitAll() {
+    try {
+      const {data:latestItems} = await sb.from("contest_items")
+        .select("*, domain_items(*, domains(id,name))")
+        .eq("contest_id",contest.id).order("item_order");
+      const {data:latestTasks} = await sb.from("tasks").select("*, responses(*)")
+        .eq("contest_id",contest.id).eq("user_id",user.id);
+      const tm={};
+      (latestTasks||[]).forEach(t=>{ tm[t.contest_item_id]=t; });
+
+      for (const item of (latestItems||[])) {
+        const task = tm[item.id];
+        if (!task) {
+          await sb.from("tasks").insert({
+            contest_id:contest.id, user_id:user.id, contest_item_id:item.id,
+            status:"submitted", started_at:new Date().toISOString(), submitted_at:new Date().toISOString(),
+          });
+        } else if (task.status==="in_progress") {
+          await sb.from("responses").update({is_draft:false}).eq("task_id",task.id);
+          await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
+        }
+      }
+      // Load score for assessment mode
+      if (contest.mode==="assessment") {
+        const {data:s} = await sb.from("v_user_contest_accuracy").select("*")
+          .eq("contest_id",contest.id).eq("user_id",user.id).single();
+        setScore(s);
+        setSubmitted(true);
+      }
+    } catch(e) { console.error("Auto-submit error:",e); }
+  }
+
   async function submitAll() {
     const incomplete=items.filter(i=>!tasks[i.id]||tasks[i.id].status!=="submitted");
     if (incomplete.length>0&&!confirm(`${incomplete.length} task(s) have no answers. Submit all anyway?`)) return;
@@ -1520,6 +1575,31 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   if (loading) return (
     <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"var(--bg)"}}>
       <span className="sp" style={{width:32,height:32}}/>
+    </div>
+  );
+
+  // Block draft contests
+  if (contest.status==="draft") return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"var(--bg)"}}>
+      <div className="card" style={{maxWidth:440,textAlign:"center",padding:40}}>
+        <div style={{fontSize:36,marginBottom:16}}>⏳</div>
+        <div className="fw6" style={{fontSize:20,marginBottom:8}}>Contest not yet started</div>
+        <div className="sm m2" style={{marginBottom:24}}>Your admin hasn't activated this contest yet. Please check back later.</div>
+        <button className="bg" onClick={onClose}>← Back to contests</button>
+      </div>
+    </div>
+  );
+
+  // Show closing banner if contest was closed while user was inside
+  if (contestClosed && !submitted) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"var(--bg)"}}>
+      <div className="card" style={{maxWidth:440,textAlign:"center",padding:40}}>
+        <div style={{fontSize:36,marginBottom:16}}>📋</div>
+        <div className="fw6" style={{fontSize:20,marginBottom:8}}>Contest has ended</div>
+        <div className="sm m2" style={{marginBottom:8}}>The contest was closed by your admin.</div>
+        <div className="sm m2" style={{marginBottom:24}}>Your answers have been automatically submitted.</div>
+        <button className="bg" onClick={onClose}>← Back to contests</button>
+      </div>
     </div>
   );
 
