@@ -1525,6 +1525,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   // Silent auto-submit — called when admin closes contest
   async function autoSubmitAll() {
     try {
+      setSubmitting(true);
       const {data:latestItems} = await sb.from("contest_items")
         .select("*, domain_items(*, domains(id,name))")
         .eq("contest_id",contest.id).order("item_order");
@@ -1545,14 +1546,14 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
           await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
         }
       }
-      // Load score for assessment mode
+      // Load score
       if (contest.mode==="assessment") {
         const {data:s} = await sb.from("v_user_contest_accuracy").select("*")
           .eq("contest_id",contest.id).eq("user_id",user.id).single();
         setScore(s);
-        setSubmitted(true);
       }
-    } catch(e) { console.error("Auto-submit error:",e); }
+      setSubmitting(false);
+    } catch(e) { console.error("Auto-submit error:",e); setSubmitting(false); }
   }
 
   async function submitAll() {
@@ -1602,14 +1603,25 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     </div>
   );
 
-  // Show closing banner if contest was closed while user was inside
+  // Show closing screen — auto-submitted, show scores
   if (contestClosed && !submitted) return (
     <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"var(--bg)"}}>
-      <div className="card" style={{maxWidth:440,textAlign:"center",padding:40}}>
-        <div style={{fontSize:36,marginBottom:16}}>📋</div>
-        <div className="fw6" style={{fontSize:20,marginBottom:8}}>Contest has ended</div>
-        <div className="sm m2" style={{marginBottom:8}}>The contest was closed by your admin.</div>
-        <div className="sm m2" style={{marginBottom:24}}>Your answers have been automatically submitted.</div>
+      <div className="card" style={{maxWidth:500,textAlign:"center",padding:44,boxShadow:"var(--shadow2)"}}>
+        <div style={{fontSize:48,marginBottom:16}}>📋</div>
+        <div className="fw6" style={{fontSize:22,marginBottom:6}}>Contest has ended</div>
+        <div className="sm m2" style={{marginBottom:24}}>Your answers have been automatically saved and submitted.</div>
+        {score&&contest.mode==="assessment"&&(<>
+          <div className="g3c" style={{marginBottom:24}}>
+            {[{v:score.tasks_submitted,l:"Tasks done"},{v:`${score.correct_attributes}/${score.total_attributes}`,l:"Correct"},{v:`${score.accuracy_pct}%`,l:"Accuracy"}].map(x=>(
+              <div className="sc" key={x.l}><div className="sv">{x.v}</div><div className="sl">{x.l}</div></div>
+            ))}
+          </div>
+          <div className={`badge cert-${score.cert_level?.toLowerCase()}`} style={{fontSize:20,padding:"10px 24px",borderRadius:10,display:"inline-flex",marginBottom:8}}>
+            {score.cert_level}
+          </div>
+          <div className="xs m3" style={{marginBottom:24}}>Based on {score.accuracy_pct}% accuracy</div>
+        </>)}
+        {submitting&&<div className="sm m2" style={{marginBottom:16}}><span className="sp"/> &nbsp;Submitting your answers...</div>}
         <button className="bg" onClick={onClose}>← Back to contests</button>
       </div>
     </div>
