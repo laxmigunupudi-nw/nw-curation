@@ -1403,8 +1403,9 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
   useEffect(()=>{ loadC(); },[]);
 
-  // Realtime: watch for contest status changes (admin closes contest)
+  // Realtime + polling: watch for contest close
   useEffect(()=>{
+    // Realtime subscription
     const sub = sb.channel("contest-status-"+contest.id)
       .on("postgres_changes",{
         event:"UPDATE", schema:"public", table:"contests",
@@ -1413,12 +1414,23 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         if (payload.new.status==="closed" && !closingRef.current) {
           closingRef.current = true;
           setContestClosed(true);
-          // Auto-submit all in-progress work
           await autoSubmitAll();
         }
       })
       .subscribe();
-    return ()=>sb.removeChannel(sub);
+
+    // Polling fallback every 20 seconds
+    const poll = setInterval(async()=>{
+      if (closingRef.current) return;
+      const {data:c} = await sb.from("contests").select("status").eq("id",contest.id).single();
+      if (c?.status==="closed") {
+        closingRef.current = true;
+        setContestClosed(true);
+        await autoSubmitAll();
+      }
+    }, 20000);
+
+    return ()=>{ sb.removeChannel(sub); clearInterval(poll); };
   },[]);
 
   async function loadC() {
@@ -1783,7 +1795,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
                   key={`${cur.id}-${f.field_name}`}
                   fieldDef={f}
                   initialValue={ta[f.field_name]||""}
-                  disabled={isSub&&contest.mode==="practice"}
+                  disabled={(isSub&&contest.mode==="practice")||contestClosed}
                   onSave={(fieldName, val)=>saveAns(cur, fieldName, val)}
                 />
               ))}
