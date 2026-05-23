@@ -725,7 +725,36 @@ function AdminContests({ showToast }) {
     const next = c.status==="active"?"closed":c.status==="draft"?"active":"active";
     const {error} = await sb.from("contests").update({status:next}).eq("id",c.id);
     if (error) { showToast("Update failed: "+error.message,"error"); return; }
-    showToast(`Contest ${next}`); load2();
+
+    // On activate: pre-create all task rows for all assigned users
+    if (next==="active") {
+      const [{data:ciItems},{data:cuUsers}] = await Promise.all([
+        sb.from("contest_items").select("id").eq("contest_id",c.id),
+        sb.from("contest_users").select("user_id").eq("contest_id",c.id),
+      ]);
+      const taskRows = [];
+      for (const u of (cuUsers||[])) {
+        for (const item of (ciItems||[])) {
+          taskRows.push({
+            contest_id: c.id,
+            user_id: u.user_id,
+            contest_item_id: item.id,
+            status: "not_started",
+            started_at: new Date().toISOString(),
+          });
+        }
+      }
+      if (taskRows.length > 0) {
+        // Insert in batches of 100 to avoid payload limits
+        for (let i=0; i<taskRows.length; i+=100) {
+          await sb.from("tasks").upsert(taskRows.slice(i,i+100), {onConflict:"contest_id,user_id,contest_item_id",ignoreDuplicates:true});
+        }
+      }
+      showToast(`Contest activated — ${taskRows.length} tasks pre-created`);
+    } else {
+      showToast(`Contest ${next}`);
+    }
+    load2();
   }
 
   async function del(c) {
@@ -1003,11 +1032,7 @@ function AdminProgress() {
   useEffect(()=>{
     if (!sel) return;
     loadP();
-    const sub = sb.channel("admin-progress-"+sel)
-      .on("postgres_changes",{event:"*",schema:"public",table:"responses"},loadP)
-      .on("postgres_changes",{event:"*",schema:"public",table:"tasks"},loadP)
-      .subscribe();
-    return ()=>sb.removeChannel(sub);
+    // Fix 4: No realtime — manual refresh only to reduce IO
   },[sel]);
 
   async function loadP() {
@@ -1081,12 +1106,17 @@ function AdminProgress() {
     <div>
       <div className="pt">Live Progress</div>
       <div className="ps">Real-time participant performance</div>
-      <div style={{maxWidth:400,marginBottom:24}}>
-        <label className="fl">Select contest</label>
-        <select value={sel} onChange={e=>{setSel(e.target.value);setProgress([]);setFa([]);}}>
-          <option value="">Choose a contest...</option>
-          {contests.map(c=><option key={c.id} value={c.id}>[{c.mode}] {c.name} — {c.status}</option>)}
-        </select>
+      <div style={{maxWidth:500,marginBottom:24,display:"flex",gap:8,alignItems:"flex-end"}}>
+        <div style={{flex:1}}>
+          <label className="fl">Select contest</label>
+          <select value={sel} onChange={e=>{setSel(e.target.value);setProgress([]);setFa([]);}}>
+            <option value="">Choose a contest...</option>
+            {contests.map(c=><option key={c.id} value={c.id}>[{c.mode}] {c.name} — {c.status}</option>)}
+          </select>
+        </div>
+        {sel&&<button className="bg bsm" onClick={loadP} disabled={load} style={{whiteSpace:"nowrap",paddingBottom:8}}>
+          {load?<span className="sp"/>:"↻ Refresh"}
+        </button>}
       </div>
       {!sel&&<div className="card" style={{textAlign:"center",color:"var(--text3)",padding:40}}>Select a contest above to see progress</div>}
       {sel&&(
@@ -1334,29 +1364,15 @@ function UserProfile({ user, showToast }) {
 }
 
 
-// ── CURATE FIELD — isolated component so typing doesn't re-render parent ─
+// ── CURATE FIELD — local state only, DB saves happen on navigate ─
 function CurateField({ fieldDef, initialValue, disabled, onSave }) {
   const [val, setVal] = useState(initialValue||"");
-  const saveTimer = useRef(null);
 
-  // Sync if parent changes (e.g. navigating to same task)
   useEffect(()=>{ setVal(initialValue||""); }, [initialValue]);
 
   function handleChange(newVal) {
     setVal(newVal);
-    // For dropdowns save immediately; for text/numeric debounce 600ms
-    if (fieldDef.input_type === "dropdown") {
-      onSave(fieldDef.field_name, newVal);
-    } else {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(()=>{ onSave(fieldDef.field_name, newVal); }, 600);
-    }
-  }
-
-  function handleBlur() {
-    // Always save on blur regardless of debounce
-    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
-    onSave(fieldDef.field_name, val);
+    onSave(fieldDef.field_name, newVal); // just updates parent state, no DB
   }
 
   const opts = fieldDef.dropdown_values ? fieldDef.dropdown_values.split(";").map(s=>s.trim()).filter(Boolean) : [];
@@ -1370,18 +1386,16 @@ function CurateField({ fieldDef, initialValue, disabled, onSave }) {
           {opts.map(o=><option key={o} value={o}>{o}</option>)}
         </select>
       ) : fieldDef.input_type==="numeric" ? (
-        <input type="number" value={val} disabled={disabled}
-          onChange={e=>handleChange(e.target.value)}
-          onBlur={handleBlur}/>
+        <input type="number" value={val} disabled={disabled} onChange={e=>handleChange(e.target.value)}/>
       ) : (
         <input type="text" value={val} disabled={disabled}
           placeholder={`Enter ${fieldDef.field_name.toLowerCase()}...`}
-          onChange={e=>handleChange(e.target.value)}
-          onBlur={handleBlur}/>
+          onChange={e=>handleChange(e.target.value)}/>
       )}
     </div>
   );
 }
+
 
 // ── CONTEST TASK VIEW ────────────────────────────────────────
 function ContestTaskView({ contest, user, onClose, showToast }) {
@@ -1419,34 +1433,35 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       })
       .subscribe();
 
-    // Polling fallback every 20 seconds
-    const poll = setInterval(async()=>{
-      if (closingRef.current) return;
-      const {data:c} = await sb.from("contests").select("status").eq("id",contest.id).single();
-      if (c?.status==="closed") {
-        closingRef.current = true;
-        setContestClosed(true);
-        await autoSubmitAll();
-      }
-    }, 20000);
-
-    return ()=>{ sb.removeChannel(sub); clearInterval(poll); };
+    return ()=>sb.removeChannel(sub);
   },[]);
 
   async function loadC() {
     try { await sb.rpc("close_expired_contests"); } catch(e) {}
+    // Fix 6: Simpler query — no deep nesting
     const {data:ci} = await sb.from("contest_items")
-      .select("*, domain_items(*, domains(id,name))")
+      .select("*, domain_items(*)")
       .eq("contest_id",contest.id)
       .order("item_order");
-    setItems(ci||[]);
+    // Attach domain name separately
+    const domainIds = [...new Set((ci||[]).map(i=>i.domain_items?.domain_id).filter(Boolean))];
+    const {data:doms} = await sb.from("domains").select("id,name").in("id",domainIds);
+    const domMap = {};
+    (doms||[]).forEach(d=>{ domMap[d.id]=d; });
+    const items = (ci||[]).map(i=>({
+      ...i,
+      domain_items: i.domain_items ? {
+        ...i.domain_items,
+        domains: domMap[i.domain_items.domain_id] || null
+      } : null
+    }));
+    setItems(items);
 
-    const dids=[...new Set((ci||[]).map(i=>i.domain_items?.domains?.id).filter(Boolean))];
+    const dids=[...new Set((ci||[]).map(i=>i.domain_items?.domain_id).filter(Boolean))];
+    // Fix 3: Single query for all domain fields instead of one per domain
+    const {data:allFields} = await sb.from("domain_fields").select("*").in("domain_id",dids).order("display_order");
     const fm={};
-    for (const did of dids) {
-      const {data:df}=await sb.from("domain_fields").select("*").eq("domain_id",did).order("display_order");
-      fm[did]=df||[];
-    }
+    (allFields||[]).forEach(f=>{ if(!fm[f.domain_id]) fm[f.domain_id]=[]; fm[f.domain_id].push(f); });
     setFields(fm);
 
     const {data:et}=await sb.from("tasks").select("*, responses(*)").eq("contest_id",contest.id).eq("user_id",user.id);
@@ -1467,16 +1482,24 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     setLoading(false);
   }
 
-  // Prevent race condition: only create one task per item at a time
+  // Tasks are pre-created on activate — just update status to in_progress
   async function ensureTask(item) {
-    if (tasks[item.id]) return tasks[item.id];
+    const existing = tasks[item.id];
+    if (existing) {
+      // Update to in_progress if not_started
+      if (existing.status==="not_started") {
+        await sb.from("tasks").update({status:"in_progress"}).eq("id",existing.id);
+        setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"in_progress"}}));
+      }
+      return existing;
+    }
+    // Fallback: create if somehow missing
     if (creatingTask.current[item.id]) {
-      // Wait for the in-progress creation
       await new Promise(r=>setTimeout(r,500));
       return tasks[item.id];
     }
     creatingTask.current[item.id]=true;
-    const {data:t,error}=await sb.from("tasks").insert({
+    const {data:t}=await sb.from("tasks").insert({
       contest_id:contest.id,user_id:user.id,contest_item_id:item.id,
       status:"in_progress",started_at:new Date().toISOString(),
     }).select().single();
@@ -1485,25 +1508,54 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     return t;
   }
 
-  async function saveAns(item, fieldName, val) {
-    const task=await ensureTask(item);
-    if (!task||task.status==="submitted") return;
+  // Update local state only — no DB write
+  function saveAns(item, fieldName, val) {
+    // Get existing task id if available
+    const task = tasks[item.id];
+    const taskId = task?.id || item.id; // fallback key
+    setAnswers(prev=>({...prev,[taskId]:{...(prev[taskId]||{}),[fieldName]:val}}));
+  }
 
-    // Always update local state immediately for responsiveness
-    setAnswers(prev=>({...prev,[task.id]:{...(prev[task.id]||{}),[fieldName]:val}}));
-
-    // For practice mode, no DB storage of responses
+  // Batch save all answers for a task to DB — called on navigate/submit
+  async function flushTask(item) {
     if (contest.mode==="practice") return;
+    const task = tasks[item.id];
+    if (!task || task.status==="submitted") return;
 
-    const golden=String(item.domain_items?.json_value?.[fieldName]||"");
-    const did=item.domain_items?.domains?.id;
-    const fd=(fields[did]||[]).find(f=>f.field_name===fieldName);
-    const ct=fd?.comparison_type||"as_is";
-    const sc=scoreF(val,golden,ct,contest.semantic_correct_threshold||0.7);
-    await sb.from("responses").upsert(
-      {task_id:task.id,field_name:fieldName,user_value:val,golden_value:golden,score:sc,comparison_type:ct,is_draft:true},
-      {onConflict:"task_id,field_name"}
-    );
+    const taskAnswers = answers[task.id] || {};
+    if (Object.keys(taskAnswers).length === 0) return;
+
+    const did = item.domain_items?.domains?.id;
+    const rows = [];
+    for (const [fieldName, val] of Object.entries(taskAnswers)) {
+      if (!val && val !== 0) continue;
+      const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+      const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
+      const ct = fd?.comparison_type||"as_is";
+      const sc = scoreF(val, golden, ct, contest.semantic_correct_threshold||0.7);
+      rows.push({task_id:task.id, field_name:fieldName, user_value:String(val), golden_value:golden, score:sc, comparison_type:ct, is_draft:true});
+    }
+    if (rows.length > 0) {
+      await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
+    }
+    // Update task status to in_progress if not_started
+    if (task.status==="not_started") {
+      await sb.from("tasks").update({status:"in_progress"}).eq("id",task.id);
+      setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"in_progress"}}));
+    }
+  }
+
+  // Check contest is still active before any user action
+  async function checkContestOpen() {
+    if (closingRef.current) return false;
+    const {data:c} = await sb.from("contests").select("status").eq("id",contest.id).single();
+    if (c?.status==="closed") {
+      closingRef.current = true;
+      setContestClosed(true);
+      await autoSubmitAll();
+      return false;
+    }
+    return true;
   }
 
   async function submitPractice(item) {
@@ -1557,7 +1609,11 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   }
 
   async function submitAll() {
-    const incomplete=items.filter(i=>!tasks[i.id]||tasks[i.id].status!=="submitted");
+    const open = await checkContestOpen();
+    if (!open) return;
+    // Flush current task before submitting all
+    await flushTask(items[idx]);
+    const incomplete=items.filter(i=>!tasks[i.id]||tasks[i.id].status==="not_started");
     if (incomplete.length>0&&!confirm(`${incomplete.length} task(s) have no answers. Submit all anyway?`)) return;
     setSubmitting(true);
 
@@ -1744,7 +1800,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               {imgs.slice(0,6).map(f=>{
                 const url=di?.json_value?.[f.field_name];
                 const fullUrl = url ? url.replace(/[?&](odnHeight|odnWidth|odnBg)=[^&]*/g,"").replace(/[?&]$/,"") : null;
-                return url?<img key={f.field_name} src={url} alt="" className="imt"
+                return url?<img key={f.field_name} src={url} alt="" loading="lazy" className="imt"
                   style={{cursor:"pointer"}}
                   onClick={()=>window.open(fullUrl,"_blank")}
                   onMouseEnter={e=>e.target.style.opacity=".8"}
@@ -1813,16 +1869,24 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               ))}
             </div>
             <div className="fx g3 jb" style={{marginTop:20}}>
-              <button className="bg bsm" disabled={idx===0} onClick={()=>setIdx(i=>i-1)}>← Previous</button>
+              <button className="bg bsm" disabled={idx===0} onClick={async()=>{
+  await flushTask(cur);
+  const open = await checkContestOpen();
+  if (open) { setIdx(i=>i-1); setShowVal(false); }
+}}>← Previous</button>
               <div className="fx g2">
                 {contest.mode==="practice"&&!isSub&&(
-                  <button className="bp bsm" onClick={()=>submitPractice(cur)}>Validate ✓</button>
+                  <button className="bp bsm" onClick={async()=>{ const open=await checkContestOpen(); if(open) submitPractice(cur); }}>Validate ✓</button>
                 )}
                 {contest.mode==="practice"&&isSub&&(
                   <button className="bg bsm" onClick={()=>setShowVal(true)}>See answers</button>
                 )}
                 {idx<items.length-1&&(
-                  <button className="bg bsm" onClick={()=>{setIdx(i=>i+1);setShowVal(false);}}>Next →</button>
+                  <button className="bg bsm" onClick={async()=>{
+                    await flushTask(cur);
+                    const open = await checkContestOpen();
+                    if (open) { setIdx(i=>i+1); setShowVal(false); }
+                  }}>Next →</button>
                 )}
               </div>
             </div>
