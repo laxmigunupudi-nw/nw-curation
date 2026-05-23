@@ -1525,7 +1525,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     const taskAnswers = answers[task.id] || {};
     if (Object.keys(taskAnswers).length === 0) return;
 
-    const did = item.domain_items?.domains?.id;
+    const did = item.domain_items?.domain_id;
     const rows = [];
     for (const [fieldName, val] of Object.entries(taskAnswers)) {
       if (!val && val !== 0) continue;
@@ -1579,7 +1579,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     try {
       setSubmitting(true);
       const {data:latestItems} = await sb.from("contest_items")
-        .select("*, domain_items(*, domains(id,name))")
+        .select("*, domain_items(*)")
         .eq("contest_id",contest.id).order("item_order");
       const {data:latestTasks} = await sb.from("tasks").select("*, responses(*)")
         .eq("contest_id",contest.id).eq("user_id",user.id);
@@ -1711,7 +1711,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const cur=items[idx];
   if (!cur) return <div style={{padding:40,textAlign:"center",color:"var(--text3)"}}>No items found in this contest.</div>;
 
-  const di=cur.domain_items; const did=di?.domains?.id; const af=fields[did]||[];
+  const di=cur.domain_items; const did=di?.domain_id; const af=fields[did]||[];
   // Smart split: handles field names containing commas e.g. "Cleaning, Care & Maintenance"
   const rawAttrs = di?.attributes_for_category||"";
   const allFieldNames = af.map(f=>f.field_name);
