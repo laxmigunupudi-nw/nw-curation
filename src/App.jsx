@@ -1586,17 +1586,23 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       const tm={};
       (latestTasks||[]).forEach(t=>{ tm[t.contest_item_id]=t; });
 
-      for (const item of (latestItems||[])) {
-        const task = tm[item.id];
-        if (!task) {
-          await sb.from("tasks").insert({
-            contest_id:contest.id, user_id:user.id, contest_item_id:item.id,
-            status:"submitted", started_at:new Date().toISOString(), submitted_at:new Date().toISOString(),
-          });
-        } else if (task.status==="in_progress") {
-          await sb.from("responses").update({is_draft:false}).eq("task_id",task.id);
-          await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
-        }
+      // Batch operations — much faster than sequential per-task updates
+      const inProgressIds = (latestItems||[])
+        .filter(item=>tm[item.id]&&tm[item.id].status==="in_progress")
+        .map(item=>tm[item.id].id);
+
+      if (inProgressIds.length>0) {
+        await sb.from("responses").update({is_draft:false}).in("task_id",inProgressIds);
+        await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressIds);
+      }
+
+      // Insert missing tasks
+      const missingItems = (latestItems||[]).filter(item=>!tm[item.id]);
+      for (const item of missingItems) {
+        await sb.from("tasks").insert({
+          contest_id:contest.id, user_id:user.id, contest_item_id:item.id,
+          status:"submitted", started_at:new Date().toISOString(), submitted_at:new Date().toISOString(),
+        });
       }
       // Load score
       if (contest.mode==="assessment") {
@@ -1618,20 +1624,37 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     setSubmitting(true);
 
     const updatedTasks={...tasks};
-    for (const item of items) {
-      const task=tasks[item.id];
-      if (!task) {
-        const {data:t}=await sb.from("tasks").insert({
-          contest_id:contest.id,user_id:user.id,contest_item_id:item.id,
-          status:"submitted",started_at:new Date().toISOString(),submitted_at:new Date().toISOString(),
-        }).select().single();
-        if(t)updatedTasks[item.id]=t;
-      } else if (task.status==="in_progress") {
-        await sb.from("responses").update({is_draft:false}).eq("task_id",task.id);
-        await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
-        updatedTasks[item.id]={...task,status:"submitted"};
-      }
+
+    // Batch all task IDs that need submitting — one query each instead of N sequential
+    const inProgressTaskIds = items
+      .filter(i=>tasks[i.id]&&tasks[i.id].status==="in_progress")
+      .map(i=>tasks[i.id].id);
+
+    const missingItems = items.filter(i=>!tasks[i.id]);
+
+    // Batch update responses is_draft=false for all in-progress tasks
+    if (inProgressTaskIds.length>0) {
+      await sb.from("responses").update({is_draft:false}).in("task_id",inProgressTaskIds);
     }
+
+    // Batch update tasks status=submitted for all in-progress tasks
+    if (inProgressTaskIds.length>0) {
+      await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressTaskIds);
+      inProgressTaskIds.forEach(tid=>{
+        const item = items.find(i=>tasks[i.id]?.id===tid);
+        if(item) updatedTasks[item.id]={...tasks[item.id],status:"submitted"};
+      });
+    }
+
+    // Insert missing tasks (shouldn't happen with pre-creation but safety net)
+    for (const item of missingItems) {
+      const {data:t}=await sb.from("tasks").insert({
+        contest_id:contest.id,user_id:user.id,contest_item_id:item.id,
+        status:"submitted",started_at:new Date().toISOString(),submitted_at:new Date().toISOString(),
+      }).select().single();
+      if(t)updatedTasks[item.id]=t;
+    }
+
     setTasks(updatedTasks);
 
     // Load final score
