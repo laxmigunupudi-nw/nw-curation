@@ -1559,15 +1559,36 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   }
 
   async function submitPractice(item) {
-    let task=tasks[item.id];
+    // Save all answers to DB before validating (practice mode saves on validate)
+    let task = tasks[item.id];
+
+    // Create task if it doesn't exist yet
     if (!task) {
       const {data:t}=await sb.from("tasks").insert({
         contest_id:contest.id,user_id:user.id,contest_item_id:item.id,
-        status:"submitted",started_at:new Date().toISOString(),submitted_at:new Date().toISOString(),
+        status:"in_progress",started_at:new Date().toISOString(),
       }).select().single();
       task=t;
       if(task)setTasks(prev=>({...prev,[item.id]:task}));
-    } else {
+    }
+
+    // Save responses for practice mode
+    if (task) {
+      const taskAnswers = answers[task.id] || {};
+      const did = item.domain_items?.domain_id;
+      const rows = [];
+      for (const [fieldName, val] of Object.entries(taskAnswers)) {
+        if (!val && val !== 0) continue;
+        const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+        const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
+        const ct = fd?.comparison_type||"as_is";
+        const sc = scoreF(val, golden, ct, contest.semantic_correct_threshold||0.7);
+        rows.push({task_id:task.id, field_name:fieldName, user_value:String(val), golden_value:golden, score:sc, comparison_type:ct, is_draft:false});
+      }
+      if (rows.length > 0) {
+        await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
+      }
+      // Mark task submitted
       await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
       setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"submitted"}}));
     }
