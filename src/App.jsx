@@ -1562,6 +1562,9 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     // Save all answers to DB before validating (practice mode saves on validate)
     let task = tasks[item.id];
 
+    // Get answers — may be keyed by item.id if task not yet created
+    const existingAnswers = answers[task?.id] || answers[item.id] || {};
+
     // Create task if it doesn't exist yet
     if (!task) {
       const {data:t}=await sb.from("tasks").insert({
@@ -1569,12 +1572,16 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         status:"in_progress",started_at:new Date().toISOString(),
       }).select().single();
       task=t;
-      if(task)setTasks(prev=>({...prev,[item.id]:task}));
+      if(task) {
+        setTasks(prev=>({...prev,[item.id]:task}));
+        // Move answers from item.id key to task.id key
+        setAnswers(prev=>({...prev,[task.id]:existingAnswers}));
+      }
     }
 
     // Save responses for practice mode
     if (task) {
-      const taskAnswers = answers[task.id] || {};
+      const taskAnswers = existingAnswers;
       const did = item.domain_items?.domain_id;
       const rows = [];
       for (const [fieldName, val] of Object.entries(taskAnswers)) {
