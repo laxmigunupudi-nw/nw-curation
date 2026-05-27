@@ -1592,7 +1592,13 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         .map(item=>tm[item.id].id);
 
       if (inProgressIds.length>0) {
-        await sb.from("responses").update({is_draft:false}).in("task_id",inProgressIds);
+        // Try batch first, fallback to chunks if it times out
+        const {error:re} = await sb.from("responses").update({is_draft:false}).in("task_id",inProgressIds);
+        if (re) {
+          for (let i=0; i<inProgressIds.length; i+=5) {
+            await sb.from("responses").update({is_draft:false}).in("task_id",inProgressIds.slice(i,i+5));
+          }
+        }
         await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressIds);
       }
 
@@ -1634,7 +1640,14 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
     // Batch update responses is_draft=false for all in-progress tasks
     if (inProgressTaskIds.length>0) {
-      await sb.from("responses").update({is_draft:false}).in("task_id",inProgressTaskIds);
+      // Try batch first, fallback to smaller chunks if it times out
+      const {error:re} = await sb.from("responses").update({is_draft:false}).in("task_id",inProgressTaskIds);
+      if (re) {
+        // Fallback: update in chunks of 5
+        for (let i=0; i<inProgressTaskIds.length; i+=5) {
+          await sb.from("responses").update({is_draft:false}).in("task_id",inProgressTaskIds.slice(i,i+5));
+        }
+      }
     }
 
     // Batch update tasks status=submitted for all in-progress tasks
