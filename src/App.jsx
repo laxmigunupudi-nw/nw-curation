@@ -1580,8 +1580,9 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     }
 
     // Save responses for practice mode
+    // answers may be keyed by item.id (fallback) if task didn't exist when user typed
     if (task) {
-      const taskAnswers = existingAnswers;
+      const taskAnswers = answers[task.id] || answers[item.id] || {};
       const did = item.domain_items?.domain_id;
       const rows = [];
       for (const [fieldName, val] of Object.entries(taskAnswers)) {
@@ -1620,13 +1621,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         .map(item=>tm[item.id].id);
 
       if (inProgressIds.length>0) {
-        // Try batch first, fallback to chunks if it times out
-        const {error:re} = await sb.from("responses").update({is_draft:false}).in("task_id",inProgressIds);
-        if (re) {
-          for (let i=0; i<inProgressIds.length; i+=5) {
-            await sb.from("responses").update({is_draft:false}).in("task_id",inProgressIds.slice(i,i+5));
-          }
-        }
+        // is_draft=false update removed — scoring view counts all responses for submitted tasks
         await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressIds);
       }
 
@@ -1666,17 +1661,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
     const missingItems = items.filter(i=>!tasks[i.id]);
 
-    // Batch update responses is_draft=false for all in-progress tasks
-    if (inProgressTaskIds.length>0) {
-      // Try batch first, fallback to smaller chunks if it times out
-      const {error:re} = await sb.from("responses").update({is_draft:false}).in("task_id",inProgressTaskIds);
-      if (re) {
-        // Fallback: update in chunks of 5
-        for (let i=0; i<inProgressTaskIds.length; i+=5) {
-          await sb.from("responses").update({is_draft:false}).in("task_id",inProgressTaskIds.slice(i,i+5));
-        }
-      }
-    }
+    // is_draft update removed — scoring view counts all responses for submitted tasks
 
     // Batch update tasks status=submitted for all in-progress tasks
     if (inProgressTaskIds.length>0) {
@@ -1798,7 +1783,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     }
     aa = found.filter(Boolean);
   }
-  const task=tasks[cur.id]; const ta=answers[task?.id]||{}; const isSub=task?.status==="submitted";
+  const task=tasks[cur.id]; const ta=answers[task?.id]||answers[cur.id]||{}; const isSub=task?.status==="submitted";
   const ctx=af.filter(f=>f.field_role==="context"); // always show all context fields
   const imgs=af.filter(f=>f.field_role==="image");
   const cure=af.filter(f=>f.field_role==="curate"&&(aa.length===0||aa.includes(f.field_name))&&String(di?.json_value?.[f.field_name]||"").trim()!=="");
