@@ -747,7 +747,8 @@ function AdminContests({ showToast }) {
       if (taskRows.length > 0) {
         // Insert in batches of 100 to avoid payload limits
         for (let i=0; i<taskRows.length; i+=100) {
-          await sb.from("tasks").upsert(taskRows.slice(i,i+100), {onConflict:"contest_id,user_id,contest_item_id",ignoreDuplicates:true});
+          const {error:tce} = await sb.from("tasks").upsert(taskRows.slice(i,i+100), {onConflict:"contest_id,user_id,contest_item_id",ignoreDuplicates:true});
+          if (tce) { showToast("⚠️ Task pre-creation error — retry activation"); throw tce; }
         }
       }
       showToast(`Contest activated — ${taskRows.length} tasks pre-created`);
@@ -1476,8 +1477,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     const allSub=(ci||[]).length>0&&(ci||[]).every(item=>tm[item.id]?.status==="submitted");
     if (allSub&&contest.mode==="assessment") {
       setSubmitted(true);
-      const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single();
-      setScore(s);
+      try { const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single(); setScore(s); } catch(e){}
     }
     setLoading(false);
   }
@@ -1604,10 +1604,19 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         rows.push({task_id:task.id, field_name:fieldName, user_value:String(val), golden_value:golden, score:sc, comparison_type:ct, is_draft:false});
       }
       if (rows.length > 0) {
-        await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
+        const {error:pre} = await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
+        if (pre) {
+          await new Promise(r=>setTimeout(r,2000));
+          const {error:pre2} = await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
+          if (pre2) { showToast("⚠️ Save failed — please try validating again"); return; }
+        }
       }
       // Mark task submitted
-      await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
+      const {error:pte} = await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
+      if (pte) {
+        await new Promise(r=>setTimeout(r,2000));
+        await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
+      }
       setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"submitted"}}));
     }
     setShowVal(true);
@@ -1632,7 +1641,11 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
       if (inProgressIds.length>0) {
         // is_draft=false update removed — scoring view counts all responses for submitted tasks
-        await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressIds);
+        const {error:ate} = await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressIds);
+        if (ate) {
+          await new Promise(r=>setTimeout(r,2000));
+          await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressIds);
+        }
       }
 
       // Insert missing tasks
@@ -1645,9 +1658,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       }
       // Load score
       if (contest.mode==="assessment") {
-        const {data:s} = await sb.from("v_user_contest_accuracy").select("*")
-          .eq("contest_id",contest.id).eq("user_id",user.id).single();
-        setScore(s);
+        try { const {data:s} = await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single(); if(s) setScore(s); } catch(e){}
       }
       setSubmitting(false);
     } catch(e) { console.error("Auto-submit error:",e); setSubmitting(false); }
@@ -1675,7 +1686,12 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
     // Batch update tasks status=submitted for all in-progress tasks
     if (inProgressTaskIds.length>0) {
-      await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressTaskIds);
+      const {error:te} = await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressTaskIds);
+      if (te) {
+        // Retry once
+        await new Promise(r=>setTimeout(r,2000));
+        await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressTaskIds);
+      }
       inProgressTaskIds.forEach(tid=>{
         const item = items.find(i=>tasks[i.id]?.id===tid);
         if(item) updatedTasks[item.id]={...tasks[item.id],status:"submitted"};
@@ -1694,8 +1710,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     setTasks(updatedTasks);
 
     // Load final score
-    const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single();
-    setScore(s);
+    try { const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single(); if(s) setScore(s); } catch(e){}
     setSubmitted(true);
     setSubmitting(false);
   }
