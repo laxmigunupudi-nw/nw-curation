@@ -1776,7 +1776,12 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             </div>
             <div className="xs m3" style={{marginTop:10}}>Certification based on {score.accuracy_pct}% accuracy</div>
           </>
-        ) : <span className="sp"/>}
+        ) : (
+          <div className="sm m2" style={{marginBottom:16}}>
+            ✅ Your answers have been saved successfully.<br/>
+            <span className="xs m3">Your score will be available shortly. You may close this window.</span>
+          </div>
+        )}
         <button className="bg" style={{marginTop:28}} onClick={onClose}>Back to contests</button>
       </div>
     </div>
