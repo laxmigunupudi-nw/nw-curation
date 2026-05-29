@@ -1536,7 +1536,17 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       rows.push({task_id:task.id, field_name:fieldName, user_value:String(val), golden_value:golden, score:sc, comparison_type:ct, is_draft:true});
     }
     if (rows.length > 0) {
-      await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
+      // Try save, retry once on failure, warn user if both fail
+      const {error:e1} = await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
+      if (e1) {
+        // Wait 2 seconds and retry once
+        await new Promise(r=>setTimeout(r,2000));
+        const {error:e2} = await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
+        if (e2) {
+          showToast("⚠️ Save failed — please go back and retry this item");
+          return;
+        }
+      }
     }
     // Update task status to in_progress if not_started
     if (task.status==="not_started") {
