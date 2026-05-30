@@ -1395,18 +1395,28 @@ function CurateField({ fieldDef, initialValue, disabled, onSave }) {
       <label className="fl">{fieldDef.field_name}</label>
       {fieldDef.input_type==="multiselect" ? (
         <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:4}}>
-          {opts.map(o=>(
-            <label key={o} style={{display:"flex",alignItems:"center",gap:6,cursor:disabled?"default":"pointer",
-              padding:"6px 12px",borderRadius:6,border:"1px solid var(--border)",
-              background:selectedVals.includes(o)?"var(--primary)":"var(--bg2)",
-              color:selectedVals.includes(o)?"white":"var(--text1)",
-              opacity:disabled?0.6:1,fontSize:13}}>
-              <input type="checkbox" checked={selectedVals.includes(o)} disabled={disabled}
-                onChange={()=>handleMultiChange(o)} style={{display:"none"}}/>
-              {o}
-            </label>
-          ))}
-          {opts.length===0&&<span className="xs m3">No options configured</span>}
+          {opts.map(o=>{
+            const sel = selectedVals.includes(o);
+            return (
+              <button key={o} type="button" disabled={disabled}
+                onClick={()=>!disabled&&handleMultiChange(o)}
+                style={{
+                  display:"flex",alignItems:"center",gap:5,
+                  cursor:disabled?"default":"pointer",
+                  padding:"6px 14px",borderRadius:20,
+                  border: sel ? "2px solid #16a34a" : "2px solid #d1d5db",
+                  background: sel ? "#22c55e" : "#f9fafb",
+                  color: sel ? "#ffffff" : "#374151",
+                  fontWeight: sel ? 600 : 400,
+                  fontSize:13,transition:"all 0.15s",
+                  opacity:disabled?0.6:1,
+                }}>
+                {sel && <span style={{fontSize:12,fontWeight:700}}>✓</span>}
+                <span>{o}</span>
+              </button>
+            );
+          })}
+          {opts.length===0&&<span style={{fontSize:12,color:"#9ca3af"}}>No options configured</span>}
         </div>
       ) : fieldDef.input_type==="dropdown" ? (
         <select value={val} disabled={disabled} onChange={e=>handleChange(e.target.value)}>
