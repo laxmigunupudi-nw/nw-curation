@@ -1673,7 +1673,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
       // Batch operations — much faster than sequential per-task updates
       const inProgressIds = (latestItems||[])
-        .filter(item=>tm[item.id]&&tm[item.id].status==="in_progress")
+        .filter(item=>tm[item.id]&&(tm[item.id].status==="in_progress"||tm[item.id].status==="not_started"))
         .map(item=>tm[item.id].id);
 
       if (inProgressIds.length>0) {
@@ -1712,9 +1712,9 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
     const updatedTasks={...tasks};
 
-    // Batch all task IDs that need submitting — one query each instead of N sequential
+    // Batch all task IDs that need submitting — include both in_progress and not_started
     const inProgressTaskIds = items
-      .filter(i=>tasks[i.id]&&tasks[i.id].status==="in_progress")
+      .filter(i=>tasks[i.id]&&(tasks[i.id].status==="in_progress"||tasks[i.id].status==="not_started"))
       .map(i=>tasks[i.id].id);
 
     const missingItems = items.filter(i=>!tasks[i.id]);
@@ -1872,7 +1872,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             const st=tSt(item);
             return (
               <div key={item.id} className={`td td-${st} ${i===idx?"td-act":""}`}
-                onClick={()=>{setIdx(i);setShowVal(false);}} title={`Task ${i+1} — ${st}`}>
+                onClick={async()=>{await flushTask(items[idx]);setIdx(i);setShowVal(false);}} title={`Task ${i+1} — ${st}`}>
                 {i+1}
               </div>
             );
