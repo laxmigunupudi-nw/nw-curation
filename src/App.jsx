@@ -1441,6 +1441,9 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const [tasks,setTasks]=useState({});
   const [fields,setFields]=useState({});
   const [idx,setIdx]=useState(0);
+  const [saveStatus,setSaveStatus]=useState('idle'); // idle|saving|saved|failed
+  const isSaving = useRef(false);
+  const pendingNav = useRef(null); // queued navigation target idx
   const [answers,setAnswers]=useState({});
   const [loading,setLoading]=useState(true);
   const [submitting,setSubmitting]=useState(false);
@@ -1554,13 +1557,14 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   }
 
   // Batch save all answers for a task to DB — called on navigate/submit
-  async function flushTask(item) {
-    if (contest.mode==="practice") return;
+  // Includes: save lock, silent null detection, timeout race, 4-attempt retry
+  async function flushTask(item, {silent=false}={}) {
+    if (contest.mode==="practice") return true;
     const task = tasks[item.id];
-    if (!task || task.status==="submitted") return;
+    if (!task || task.status==="submitted") return true;
 
     const taskAnswers = answers[task.id] || {};
-    if (Object.keys(taskAnswers).length === 0) return;
+    if (Object.keys(taskAnswers).length === 0) return true;
 
     const did = item.domain_items?.domain_id;
     const rows = [];
@@ -1572,24 +1576,56 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       const sc = scoreF(val, golden, ct, contest.semantic_correct_threshold||0.7);
       rows.push({task_id:task.id, field_name:fieldName, user_value:String(val), golden_value:golden, score:sc, comparison_type:ct, is_draft:true});
     }
-    if (rows.length > 0) {
-      // Try save, retry once on failure, warn user if both fail
-      const {error:e1} = await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
-      if (e1) {
-        // Wait 2 seconds and retry once
-        await new Promise(r=>setTimeout(r,2000));
-        const {error:e2} = await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
-        if (e2) {
-          showToast("⚠️ Save failed — please go back and retry this item");
-          return;
-        }
+
+    if (rows.length === 0) return true;
+
+    // Lock navigation
+    isSaving.current = true;
+    if (!silent) setSaveStatus('saving');
+
+    // Helper: single save attempt with timeout race and silent null detection
+    async function attemptSave() {
+      const timeout = new Promise((_,reject)=>setTimeout(()=>reject(new Error('timeout')),8000));
+      const save = sb.from("responses").upsert(rows,{onConflict:"task_id,field_name"}).select('id');
+      const {error, data} = await Promise.race([save, timeout.then(()=>{throw new Error('timeout')})]).catch(e=>({error:e,data:null}));
+      if (error || !data || data.length === 0) throw new Error(error?.message||'silent-null');
+    }
+
+    // 4 attempts with increasing delays
+    const delays = [0, 2000, 5000, 10000];
+    let saved = false;
+    for (let i=0; i<delays.length; i++) {
+      if (delays[i]>0) await new Promise(r=>setTimeout(r,delays[i]));
+      try {
+        await attemptSave();
+        saved = true;
+        break;
+      } catch(e) {
+        console.warn(`Save attempt ${i+1} failed:`, e.message);
       }
     }
-    // Update task status to in_progress if not_started
-    if (task.status==="not_started") {
-      await sb.from("tasks").update({status:"in_progress"}).eq("id",task.id);
-      setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"in_progress"}}));
+
+    if (saved) {
+      if (!silent) { setSaveStatus('saved'); setTimeout(()=>setSaveStatus('idle'),2000); }
+      // Update task status to in_progress if not_started
+      if (task.status==="not_started") {
+        await sb.from("tasks").update({status:"in_progress"}).eq("id",task.id);
+        setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"in_progress"}}));
+      }
+    } else {
+      if (!silent) setSaveStatus('failed');
     }
+
+    // Release lock and execute any queued navigation
+    isSaving.current = false;
+    if (pendingNav.current !== null && saved) {
+      const target = pendingNav.current;
+      pendingNav.current = null;
+      setIdx(target);
+      setShowVal(false);
+    }
+
+    return saved;
   }
 
   // Check contest is still active before any user action
@@ -1663,6 +1699,10 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   async function autoSubmitAll() {
     try {
       setSubmitting(true);
+      // Save current task first — this is the critical fix for data loss on contest close
+      if (items[idx]) {
+        await flushTask(items[idx], {silent:true});
+      }
       const {data:latestItems} = await sb.from("contest_items")
         .select("*, domain_items(*)")
         .eq("contest_id",contest.id).order("item_order");
@@ -1704,8 +1744,17 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   async function submitAll() {
     const open = await checkContestOpen();
     if (!open) return;
+    // Wait if save is in progress
+    if (isSaving.current) {
+      showToast("Please wait — saving current task...");
+      await new Promise(r=>{ const t=setInterval(()=>{ if(!isSaving.current){clearInterval(t);r();} },200); });
+    }
     // Flush current task before submitting all
-    await flushTask(items[idx]);
+    const saved = await flushTask(items[idx]);
+    if (!saved) {
+      const proceed = window.confirm("⚠️ Current task could not be saved. Submit anyway? (answers for this task will be lost)");
+      if (!proceed) return;
+    }
     const incomplete=items.filter(i=>!tasks[i.id]||tasks[i.id].status==="not_started");
     if (incomplete.length>0&&!confirm(`${incomplete.length} task(s) have no answers. Submit all anyway?`)) return;
     setSubmitting(true);
@@ -1872,7 +1921,12 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             const st=tSt(item);
             return (
               <div key={item.id} className={`td td-${st} ${i===idx?"td-act":""}`}
-                onClick={async()=>{await flushTask(items[idx]);setIdx(i);setShowVal(false);}} title={`Task ${i+1} — ${st}`}>
+                onClick={async()=>{
+                  if(isSaving.current){pendingNav.current=i;return;}
+                  const saved=await flushTask(items[idx]);
+                  if(saved){setIdx(i);setShowVal(false);}
+                  else{pendingNav.current=i;} // queue nav for after retry resolves
+                }} title={`Task ${i+1} — ${st}`}>
                 {i+1}
               </div>
             );
@@ -1903,9 +1957,40 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             <div className="xs m3" style={{marginBottom:2}}>{contest.name} · {contest.mode}</div>
             <div className="fw6" style={{fontSize:16}}>Task {idx+1} of {items.length}{di?.category?` — ${di.category}`:""}</div>
           </div>
-          <div className="fx g2">
-            <button className="bg bsm" disabled={idx===0} onClick={()=>{setIdx(i=>i-1);setShowVal(false);}}>← Prev</button>
-            <button className="bg bsm" disabled={idx===items.length-1} onClick={()=>{setIdx(i=>i+1);setShowVal(false);}}>Next →</button>
+          <div className="fx ac g3">
+            {saveStatus==='saving'&&(
+              <div className="fx ac g1" style={{fontSize:12,color:'#6b7280'}}>
+                <span className="sp" style={{width:12,height:12}}/> Saving...
+              </div>
+            )}
+            {saveStatus==='saved'&&(
+              <div style={{fontSize:12,color:'#16a34a',fontWeight:600}}>✓ Saved</div>
+            )}
+            {saveStatus==='failed'&&(
+              <div className="fx ac g1">
+                <div style={{fontSize:12,color:'#dc2626',fontWeight:600}}>⚠️ Save failed</div>
+                <button style={{fontSize:11,padding:'2px 8px',borderRadius:4,border:'1px solid #dc2626',background:'white',color:'#dc2626',cursor:'pointer'}}
+                  onClick={async()=>{ const saved=await flushTask(items[idx]); if(saved&&pendingNav.current!==null){const t=pendingNav.current;pendingNav.current=null;setIdx(t);setShowVal(false);} }}>
+                  Retry
+                </button>
+                <button style={{fontSize:11,padding:'2px 8px',borderRadius:4,border:'1px solid #9ca3af',background:'white',color:'#6b7280',cursor:'pointer'}}
+                  onClick={()=>{ setSaveStatus('idle'); if(pendingNav.current!==null){const t=pendingNav.current;pendingNav.current=null;setIdx(t);setShowVal(false);} }}>
+                  Skip
+                </button>
+              </div>
+            )}
+            <div className="fx g2">
+              <button className="bg bsm" disabled={idx===0} onClick={async()=>{
+                if(isSaving.current){pendingNav.current=idx-1;return;}
+                const saved=await flushTask(items[idx]);
+                if(saved){setIdx(i=>i-1);setShowVal(false);}
+              }}>← Prev</button>
+              <button className="bg bsm" disabled={idx===items.length-1} onClick={async()=>{
+                if(isSaving.current){pendingNav.current=idx+1;return;}
+                const saved=await flushTask(items[idx]);
+                if(saved){setIdx(i=>i+1);setShowVal(false);}
+              }}>Next →</button>
+            </div>
           </div>
         </div>
 
@@ -1969,8 +2054,14 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               );
             })}
             <div className="fx g3 jb" style={{marginTop:16}}>
-              <button className="bg bsm" disabled={idx===0} onClick={()=>{setIdx(i=>i-1);setShowVal(false);}}>← Prev task</button>
-              {idx<items.length-1&&<button className="bg bsm" onClick={()=>{setIdx(i=>i+1);setShowVal(false);}}>Next task →</button>}
+              <button className="bg bsm" disabled={idx===0} onClick={async()=>{
+                if(isSaving.current){pendingNav.current=idx-1;return;}
+                await flushTask(items[idx]);setIdx(i=>i-1);setShowVal(false);
+              }}>← Prev task</button>
+              {idx<items.length-1&&<button className="bg bsm" onClick={async()=>{
+                if(isSaving.current){pendingNav.current=idx+1;return;}
+                await flushTask(items[idx]);setIdx(i=>i+1);setShowVal(false);
+              }}>Next task →</button>}
             </div>
           </div>
         )}
@@ -1997,9 +2088,11 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             </div>
             <div className="fx g3 jb" style={{marginTop:20}}>
               <button className="bg bsm" disabled={idx===0} onClick={async()=>{
-  await flushTask(cur);
-  const open = await checkContestOpen();
-  if (open) { setIdx(i=>i-1); setShowVal(false); }
+  if(isSaving.current){pendingNav.current=idx-1;return;}
+  const saved=await flushTask(cur);
+  if(!saved){return;} // blocked — save failed, user sees indicator
+  const open=await checkContestOpen();
+  if(open){setIdx(i=>i-1);setShowVal(false);}
 }}>← Previous</button>
               <div className="fx g2">
                 {contest.mode==="practice"&&!isSub&&(
@@ -2010,9 +2103,11 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
                 )}
                 {idx<items.length-1&&(
                   <button className="bg bsm" onClick={async()=>{
-                    await flushTask(cur);
-                    const open = await checkContestOpen();
-                    if (open) { setIdx(i=>i+1); setShowVal(false); }
+                    if(isSaving.current){pendingNav.current=idx+1;return;}
+                    const saved=await flushTask(cur);
+                    if(!saved){return;} // blocked — save failed
+                    const open=await checkContestOpen();
+                    if(open){setIdx(i=>i+1);setShowVal(false);}
                   }}>Next →</button>
                 )}
               </div>
