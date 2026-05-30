@@ -162,7 +162,7 @@ function scoreF(uv, gv, ct, st=0.7) {
   if (!uv||!gv) return 0;
   const u=String(uv).trim(), g=String(gv).trim();
   if (ct==="as_is") return u.toLowerCase()===g.toLowerCase()?1:0;
-  if (ct==="list") {
+  if (ct==="multiselect"||ct==="list") {
     const us=new Set(u.toLowerCase().split(",").map(x=>x.trim()).filter(Boolean));
     const gs=new Set(g.toLowerCase().split(",").map(x=>x.trim()).filter(Boolean));
     if(us.size===0&&gs.size===0)return 1;
@@ -1377,11 +1377,38 @@ function CurateField({ fieldDef, initialValue, disabled, onSave }) {
   }
 
   const opts = fieldDef.dropdown_values ? fieldDef.dropdown_values.split(";").map(s=>s.trim()).filter(Boolean) : [];
+  // For multiselect: val is stored as comma-separated string, parse to array for UI
+  const selectedVals = fieldDef.input_type==="multiselect"
+    ? (val ? val.split(",").map(s=>s.trim()).filter(Boolean) : [])
+    : [];
+
+  function handleMultiChange(opt) {
+    const curr = val ? val.split(",").map(s=>s.trim()).filter(Boolean) : [];
+    const next = curr.includes(opt) ? curr.filter(x=>x!==opt) : [...curr, opt];
+    const newVal = next.join(", ");
+    setVal(newVal);
+    onSave(fieldDef.field_name, newVal);
+  }
 
   return (
     <div key={fieldDef.field_name}>
       <label className="fl">{fieldDef.field_name}</label>
-      {fieldDef.input_type==="dropdown" ? (
+      {fieldDef.input_type==="multiselect" ? (
+        <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:4}}>
+          {opts.map(o=>(
+            <label key={o} style={{display:"flex",alignItems:"center",gap:6,cursor:disabled?"default":"pointer",
+              padding:"6px 12px",borderRadius:6,border:"1px solid var(--border)",
+              background:selectedVals.includes(o)?"var(--primary)":"var(--bg2)",
+              color:selectedVals.includes(o)?"white":"var(--text1)",
+              opacity:disabled?0.6:1,fontSize:13}}>
+              <input type="checkbox" checked={selectedVals.includes(o)} disabled={disabled}
+                onChange={()=>handleMultiChange(o)} style={{display:"none"}}/>
+              {o}
+            </label>
+          ))}
+          {opts.length===0&&<span className="xs m3">No options configured</span>}
+        </div>
+      ) : fieldDef.input_type==="dropdown" ? (
         <select value={val} disabled={disabled} onChange={e=>handleChange(e.target.value)}>
           <option value="">Select...</option>
           {opts.map(o=><option key={o} value={o}>{o}</option>)}
@@ -1905,16 +1932,27 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             {cure.map(f=>{
               const uv=ta[f.field_name]||"";
               const gv=String(di?.json_value?.[f.field_name]||"");
+              const isMulti=f.comparison_type==="multiselect"||f.comparison_type==="list";
               const sc2=scoreF(uv,gv,f.comparison_type,contest.semantic_correct_threshold||0.7);
-              const ok=f.comparison_type==="semantic"?sc2>=(contest.semantic_correct_threshold||0.7):sc2===1;
+              const ok=f.comparison_type==="semantic"?sc2>=(contest.semantic_correct_threshold||0.7):f.comparison_type==="multiselect"||f.comparison_type==="list"?sc2>=0.99:sc2===1;
               return (
                 <div key={f.field_name} className={ok?"fsc":sc2>0?"fsp":"fsw"}>
                   <div className="fx ac jb">
                     <span className="xs fw6">{f.field_name}</span>
                     <span className="xs mono fw6">{Math.round(sc2*100)}%</span>
                   </div>
-                  <div className="fx g4 xs" style={{marginTop:4}}>
-                    <span><span style={{opacity:.6}}>Your answer: </span><strong>{uv||"(blank)"}</strong></span>
+                  <div className="fx g4 xs" style={{marginTop:4,flexWrap:"wrap"}}>
+                    <span><span style={{opacity:.6}}>Your answer: </span>
+                      {isMulti && uv ? (
+                        uv.split(",").map(s=>s.trim()).filter(Boolean).map(s=>(
+                          <span key={s} style={{marginRight:4,padding:"2px 8px",borderRadius:4,fontSize:12,
+                            background:gv.toLowerCase().split(",").map(x=>x.trim()).includes(s.toLowerCase())?"var(--green-bg)":"var(--red-bg)",
+                            color:gv.toLowerCase().split(",").map(x=>x.trim()).includes(s.toLowerCase())?"var(--green)":"var(--red)"}}>
+                            {s}
+                          </span>
+                        ))
+                      ) : <strong>{uv||"(blank)"}</strong>}
+                    </span>
                     <span><span style={{opacity:.6}}>Correct: </span><strong>{gv||"(blank)"}</strong></span>
                   </div>
                 </div>
