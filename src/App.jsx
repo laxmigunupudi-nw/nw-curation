@@ -1046,14 +1046,54 @@ function AdminProgress() {
       (allUsers||[]).forEach(u=>{ if(u.id) userMap[u.id]=u; });
 
       if (con?.mode==="assessment") {
-        const [{data:p,error:pe},{data:f,error:fe}] = await Promise.all([
+        const [{data:p,error:pe},{data:f,error:fe},{data:allTasks},{data:assigned}] = await Promise.all([
           sb.from("v_user_contest_accuracy").select("*").eq("contest_id",sel),
           sb.from("v_field_accuracy").select("*").eq("contest_id",sel).order("field_accuracy_pct"),
+          sb.from("tasks").select("user_id,status").eq("contest_id",sel),
+          sb.from("contest_users").select("user_id").eq("contest_id",sel),
         ]);
         if(pe) console.error("Progress error:",pe.message);
         if(fe) console.error("Field accuracy error:",fe.message);
-        // Attach user info manually
-        const enriched = (p||[]).map(row=>({...row, users: userMap[row.user_id]||null}));
+
+        // Build score map from view
+        const scoreMap = {};
+        (p||[]).forEach(row=>{ scoreMap[row.user_id]=row; });
+
+        // Build task status map — count submitted tasks per user
+        const taskMap = {};
+        (allTasks||[]).forEach(t=>{
+          if(!taskMap[t.user_id]) taskMap[t.user_id]={submitted:0,in_progress:0,not_started:0};
+          taskMap[t.user_id][t.status]=(taskMap[t.user_id][t.status]||0)+1;
+        });
+
+        // Build full list from all assigned users
+        const enriched = (assigned||[]).map(row=>{
+          const uid = row.user_id;
+          const score = scoreMap[uid]||null;
+          const tstat = taskMap[uid]||{submitted:0,in_progress:0,not_started:0};
+          const tasksDone = tstat.submitted + tstat.in_progress;
+          const status = tstat.submitted>0&&tstat.in_progress===0&&tstat.not_started===0 ? 'submitted'
+                       : tstat.in_progress>0 ? 'in_progress' : 'not_started';
+          return {
+            user_id: uid,
+            users: userMap[uid]||null,
+            tasks_submitted: score?.tasks_submitted||tstat.submitted||0,
+            tasks_done: tasksDone,
+            total_attributes: score?.total_attributes||0,
+            correct_attributes: score?.correct_attributes||0,
+            accuracy_pct: score?.accuracy_pct||null,
+            cert_level: score?.cert_level||null,
+            user_status: status,
+          };
+        });
+
+        // Sort: submitted first (by accuracy desc), then in_progress, then not_started
+        enriched.sort((a,b)=>{
+          const order = {submitted:0, in_progress:1, not_started:2};
+          if(order[a.user_status]!==order[b.user_status]) return order[a.user_status]-order[b.user_status];
+          return (b.accuracy_pct||0)-(a.accuracy_pct||0);
+        });
+
         setProgress(enriched); setFa(f||[]);
       } else {
         const {data:p,error:pe}=await sb.from("v_practice_progress").select("*").eq("contest_id",sel);
@@ -1070,14 +1110,15 @@ function AdminProgress() {
     if (!progress.length) return;
     let csv, filename;
     if (con?.mode==="assessment") {
-      const headers = ["Name","Email","Tasks Done","Total Attributes","Correct Attributes","Accuracy %","Certification"];
+      const headers = ["Name","Email","Status","Tasks Done","Total Attributes","Correct Attributes","Accuracy %","Certification"];
       const rows = progress.map(p=>[
         p.users?.full_name||"",
         p.users?.email||"",
+        p.user_status||"submitted",
         p.tasks_submitted||0,
         p.total_attributes||0,
         p.correct_attributes||0,
-        p.accuracy_pct||0,
+        p.accuracy_pct||"",
         p.cert_level||"",
       ]);
       csv = [headers, ...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
@@ -1146,23 +1187,38 @@ function AdminProgress() {
                       {con?.mode==="assessment"&&<><th>Total attrs</th><th>Correct</th><th>Accuracy</th><th>Cert</th></>}
                     </tr></thead>
                     <tbody>
-                      {progress.length===0&&<tr><td colSpan={7} style={{textAlign:"center",color:"var(--text3)",padding:24}}>No submissions yet</td></tr>}
+                      {progress.length===0&&<tr><td colSpan={7} style={{textAlign:"center",color:"var(--text3)",padding:24}}>No data yet</td></tr>}
                       {progress.map((p,i)=>(
-                        <tr key={i}>
-                          <td className="fw5">{p.users?.full_name||p.users?.email||"—"}</td>
+                        <tr key={i} style={{opacity:p.user_status==='not_started'?0.5:1}}>
+                          <td className="fw5">
+                            <div>{p.users?.full_name||p.users?.email||"—"}</div>
+                            {con?.mode==="assessment"&&(
+                              <div style={{fontSize:11,marginTop:2}}>
+                                {p.user_status==='submitted'&&<span style={{color:'var(--green)'}}>✓ Submitted</span>}
+                                {p.user_status==='in_progress'&&<span style={{color:'var(--amber)'}}>⟳ In progress ({p.tasks_done}/24)</span>}
+                                {p.user_status==='not_started'&&<span style={{color:'var(--text3)'}}>— Not started</span>}
+                              </div>
+                            )}
+                          </td>
                           <td>{p.tasks_submitted||p.tasks_completed||0}</td>
                           {con?.mode==="assessment"&&<>
-                            <td>{p.total_attributes}</td>
-                            <td>{p.correct_attributes}</td>
+                            <td>{p.total_attributes||"—"}</td>
+                            <td>{p.correct_attributes||"—"}</td>
                             <td>
-                              <div className="fx ac g2">
-                                <div className="pb" style={{width:80}}>
-                                  <div className="pf" style={{width:`${p.accuracy_pct||0}%`,background:p.accuracy_pct>=90?"var(--green)":p.accuracy_pct>=70?"var(--amber)":"var(--red)"}}/>
+                              {p.accuracy_pct!=null?(
+                                <div className="fx ac g2">
+                                  <div className="pb" style={{width:80}}>
+                                    <div className="pf" style={{width:`${p.accuracy_pct||0}%`,background:p.accuracy_pct>=90?"var(--green)":p.accuracy_pct>=70?"var(--amber)":"var(--red)"}}/>
+                                  </div>
+                                  <span className="mono xs">{p.accuracy_pct}%</span>
                                 </div>
-                                <span className="mono xs">{p.accuracy_pct||0}%</span>
-                              </div>
+                              ):<span style={{color:'var(--text3)',fontSize:12}}>—</span>}
                             </td>
-                            <td><span className={`badge cert-${p.cert_level?.toLowerCase()}`}>{p.cert_level}</span></td>
+                            <td>
+                              {p.cert_level
+                                ? <span className={`badge cert-${p.cert_level?.toLowerCase()}`}>{p.cert_level}</span>
+                                : <span style={{color:'var(--text3)',fontSize:12}}>—</span>}
+                            </td>
                           </>}
                         </tr>
                       ))}
