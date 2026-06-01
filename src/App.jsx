@@ -401,12 +401,20 @@ function AdminUsers({ showToast }) {
     setBulkResult(null);
     if (!newPass||newPass.length<6) { showToast("Enter a temporary password (min 6 chars)","error"); setSaving(false); return; }
 
-    // Parse emails from CSV text
+    // Parse emails and names from CSV text
     const lines = csvTxt.trim().split("\n").filter(l=>l.trim());
-    const emails = lines.map(line=>{
+    const emails = [];
+    const names = {}; // email -> name map
+    lines.forEach(line=>{
       const clean = line.trim().replace(/^["'"]|["'"]$/g,"");
-      return clean.split(",")[0].trim().replace(/^["'"]|["'"]$/g,"");
-    }).filter(e=>e&&e.includes("@"));
+      const parts = clean.split(",").map(s=>s.trim().replace(/^["'"]|["'"]$/g,""));
+      const email = parts[0];
+      const name = parts.slice(1).join(" ").trim();
+      if (email && email.includes("@")) {
+        emails.push(email);
+        if (name) names[email] = name;
+      }
+    });
 
     if (emails.length===0) { showToast("No valid emails found","error"); setSaving(false); return; }
 
@@ -420,7 +428,7 @@ function AdminUsers({ showToast }) {
           "Authorization": `Bearer ${session?.access_token}`,
           "apikey": SUPABASE_ANON,
         },
-        body: JSON.stringify({ emails, password: newPass }),
+        body: JSON.stringify({ emails, names, password: newPass }),
       });
 
       const result = await resp.json();
