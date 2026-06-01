@@ -462,10 +462,25 @@ function AdminUsers({ showToast }) {
   async function handleReset(e) {
     e.preventDefault(); setSaving(true);
     if (!resetPass||resetPass.length<6) { showToast("Min 6 characters","error"); setSaving(false); return; }
-    // Reset by re-signing up — Supabase updates password for existing unconfirmed accounts
-    // For confirmed accounts the user must change via Profile after logging in
-    showToast(`Share this temporary password with ${showReset.email}: ${resetPass}`);
-    setShowReset(null); setResetPass(""); setSaving(false);
+    try {
+      const {data:{session}} = await sb.auth.getSession();
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/reset-password`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session?.access_token}`,
+          "apikey": SUPABASE_ANON,
+        },
+        body: JSON.stringify({ userId: showReset.id, password: resetPass }),
+      });
+      const result = await resp.json();
+      if (!resp.ok) throw new Error(result.error||"Reset failed");
+      showToast(`✓ Password reset for ${showReset.email}. Share the new password with them.`);
+      setShowReset(null); setResetPass("");
+    } catch(err) {
+      showToast("Reset failed: "+err.message, "error");
+    }
+    setSaving(false);
   }
 
 
