@@ -359,6 +359,7 @@ function AdminUsers({ showToast }) {
   const [csvTxt,setCsvTxt] = useState("");
   const [addMode,setAddMode] = useState("single");
   const [saving,setSaving] = useState(false);
+  const [bulkResult,setBulkResult] = useState(null);
   const fRef = useRef();
 
   async function load2() {
@@ -397,22 +398,42 @@ function AdminUsers({ showToast }) {
 
   async function handleCSV(e) {
     e.preventDefault(); setSaving(true);
+    setBulkResult(null);
     if (!newPass||newPass.length<6) { showToast("Enter a temporary password (min 6 chars)","error"); setSaving(false); return; }
-    let added=0, skipped=0;
+
+    // Parse emails from CSV text
     const lines = csvTxt.trim().split("\n").filter(l=>l.trim());
-    for (const line of lines) {
-      const cleanLine = line.trim().replace(/^["'"]|["'"]$/g,"");
-      const parts = cleanLine.split(",").map(s=>s.trim().replace(/^["'"]|["'"]$/g,""));
-      const [email,...nameParts] = parts;
-      const name = nameParts.join(" ").trim();
-      if (!email||!email.includes("@")) continue;
-      const r = await addUser(email, name, newPass);
-      if (r.ok) added++; else skipped++;
-      // Small delay to avoid Supabase rate limiting on rapid signups
-      await new Promise(res=>setTimeout(res, 800));
+    const emails = lines.map(line=>{
+      const clean = line.trim().replace(/^["'"]|["'"]$/g,"");
+      return clean.split(",")[0].trim().replace(/^["'"]|["'"]$/g,"");
+    }).filter(e=>e&&e.includes("@"));
+
+    if (emails.length===0) { showToast("No valid emails found","error"); setSaving(false); return; }
+
+    try {
+      // Call Edge Function — bypasses rate limits
+      const {data:{session}} = await sb.auth.getSession();
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/create-users`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session?.access_token}`,
+          "apikey": SUPABASE_ANON,
+        },
+        body: JSON.stringify({ emails, password: newPass }),
+      });
+
+      const result = await resp.json();
+      if (!resp.ok) throw new Error(result.error||"Edge Function error");
+
+      setBulkResult(result);
+      showToast(`✓ ${result.summary.created} created, ${result.summary.skipped} skipped, ${result.summary.failed} failed`);
+      setCsvTxt(""); setNewPass("");
+      load2();
+    } catch(err) {
+      showToast("Bulk create failed: "+err.message, "error");
     }
-    showToast(`${added} added${skipped>0?`, ${skipped} skipped`:""}`);
-    setCsvTxt(""); setNewPass(""); setShowAdd(false); load2(); setSaving(false);
+    setSaving(false);
   }
 
   async function deleteUser(u) {
@@ -492,6 +513,31 @@ function AdminUsers({ showToast }) {
                 </div>
               </form>
             ) : (
+              <>{bulkResult ? (
+                <div>
+                  <div style={{marginBottom:12}}>
+                    <div className="fw6" style={{marginBottom:8}}>Results</div>
+                    <div className="fx g3" style={{marginBottom:12}}>
+                      <div style={{padding:"8px 16px",borderRadius:8,background:"#dcfce7",color:"#16a34a",fontWeight:600,fontSize:14}}>✓ {bulkResult.summary.created} created</div>
+                      {bulkResult.summary.skipped>0&&<div style={{padding:"8px 16px",borderRadius:8,background:"#fef9c3",color:"#ca8a04",fontWeight:600,fontSize:14}}>⟳ {bulkResult.summary.skipped} skipped</div>}
+                      {bulkResult.summary.failed>0&&<div style={{padding:"8px 16px",borderRadius:8,background:"#fee2e2",color:"#dc2626",fontWeight:600,fontSize:14}}>✗ {bulkResult.summary.failed} failed</div>}
+                    </div>
+                    {bulkResult.results.filter(r=>r.status!=='created').length>0&&(
+                      <div style={{maxHeight:200,overflowY:"auto",border:"1px solid var(--border)",borderRadius:8,padding:8}}>
+                        <div className="xs fw6" style={{marginBottom:6,color:"var(--text3)"}}>Skipped / Failed:</div>
+                        {bulkResult.results.filter(r=>r.status!=='created').map((r,i)=>(
+                          <div key={i} className="fx ac g2" style={{padding:"3px 0",fontSize:12,borderBottom:"1px solid var(--border)"}}>
+                            <span style={{color:r.status==='skipped'?"#ca8a04":"#dc2626",fontWeight:600,minWidth:52}}>{r.status}</span>
+                            <span className="mono">{r.email}</span>
+                            <span style={{color:"var(--text3)",fontSize:11}}>— {r.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <button className="bp" onClick={()=>{setBulkResult(null);setShowAdd(false);}}>Done</button>
+                </div>
+              ) : (
               <form onSubmit={handleCSV}>
                 <div className="al al-i" style={{fontSize:12}}>One per line: <code>email, Full Name</code> — name is optional.</div>
                 <div className="fg">
@@ -507,9 +553,10 @@ function AdminUsers({ showToast }) {
                 <div className="al al-i" style={{fontSize:12}}>All users in this batch get this password. Share it with them.</div>
                 <div className="fx g3 jb">
                   <button type="button" className="bg" onClick={()=>setShowAdd(false)}>Cancel</button>
-                  <button type="submit" className="bp" disabled={saving||!csvTxt.trim()}>{saving?<><span className="sp"/> &nbsp;Adding...</>:"Add all"}</button>
+                  <button type="submit" className="bp" disabled={saving||!csvTxt.trim()}>{saving?<><span className="sp"/> &nbsp;Adding... (this may take a minute)</>:"Add all"}</button>
                 </div>
               </form>
+              )}</>
             )}
           </div>
         </div>
