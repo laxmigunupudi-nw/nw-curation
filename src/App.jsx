@@ -1747,6 +1747,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     if (pendingNav.current !== null && saved) {
       const target = pendingNav.current;
       pendingNav.current = null;
+      // Brief pause so user sees "Saved ✓" before navigating
+      await new Promise(r=>setTimeout(r,400));
       setIdx(target);
       setShowVal(false);
     }
