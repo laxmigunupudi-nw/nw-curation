@@ -1827,10 +1827,28 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   async function autoSubmitAll() {
     try {
       setSubmitting(true);
-      // Save current task first — this is the critical fix for data loss on contest close
+
+      // Build current task rows before any async operations
+      const currentTaskRows = buildCurrentTaskRows(items[idx]);
+
+      // ── PRIMARY PATH: Edge Function ───────────────────────────────────────
+      const efResult = await callSubmitEdgeFunction(currentTaskRows);
+
+      if (efResult?.success) {
+        // Edge Function succeeded
+        if (contest.mode==="assessment" && efResult.score) setScore(efResult.score);
+        setSubmitting(false);
+        return;
+      }
+
+      // ── FALLBACK PATH: Browser submit ─────────────────────────────────────
+      console.warn("Edge Function failed on auto-submit — falling back to browser submit");
+
+      // Save current task first
       if (items[idx]) {
         await flushTask(items[idx], {silent:true});
       }
+
       const {data:latestItems} = await sb.from("contest_items")
         .select("*, domain_items(*)")
         .eq("contest_id",contest.id).order("item_order");
@@ -1839,13 +1857,11 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       const tm={};
       (latestTasks||[]).forEach(t=>{ tm[t.contest_item_id]=t; });
 
-      // Batch operations — much faster than sequential per-task updates
       const inProgressIds = (latestItems||[])
         .filter(item=>tm[item.id]&&(tm[item.id].status==="in_progress"||tm[item.id].status==="not_started"))
         .map(item=>tm[item.id].id);
 
       if (inProgressIds.length>0) {
-        // is_draft=false update removed — scoring view counts all responses for submitted tasks
         const {error:ate} = await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressIds);
         if (ate) {
           await new Promise(r=>setTimeout(r,2000));
@@ -1853,7 +1869,6 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         }
       }
 
-      // Insert missing tasks
       const missingItems = (latestItems||[]).filter(item=>!tm[item.id]);
       for (const item of missingItems) {
         await sb.from("tasks").insert({
@@ -1861,12 +1876,58 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
           status:"submitted", started_at:new Date().toISOString(), submitted_at:new Date().toISOString(),
         });
       }
-      // Load score
+
       if (contest.mode==="assessment") {
         try { const {data:s} = await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single(); if(s) setScore(s); } catch(e){}
       }
       setSubmitting(false);
     } catch(e) { console.error("Auto-submit error:",e); setSubmitting(false); }
+  }
+
+  // Build pre-scored rows for current task — used by Edge Function
+  function buildCurrentTaskRows(item) {
+    if (!item) return [];
+    const task = tasks[item.id];
+    if (!task || task.status==="submitted") return [];
+    const taskAnswers = answers[task.id] || {};
+    const did = item.domain_items?.domain_id;
+    const rows = [];
+    for (const [fieldName, val] of Object.entries(taskAnswers)) {
+      if (!val && val !== 0) continue;
+      const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+      const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
+      const ct = fd?.comparison_type||"as_is";
+      const sc = scoreF(val, golden, ct, contest.semantic_correct_threshold||0.7);
+      rows.push({task_id:task.id, field_name:fieldName, user_value:String(val), golden_value:golden, score:sc, comparison_type:ct, is_draft:true});
+    }
+    return rows;
+  }
+
+  // Call submit-contest Edge Function — primary submit path
+  async function callSubmitEdgeFunction(currentTaskRows=[]) {
+    const delays = [0, 3000, 6000];
+    for (let i=0; i<delays.length; i++) {
+      if (delays[i]>0) await new Promise(r=>setTimeout(r,delays[i]));
+      try {
+        const {data:{session}} = await sb.auth.getSession();
+        const timeout = new Promise((_,reject)=>setTimeout(()=>reject(new Error('timeout')),15000));
+        const call = fetch(`${SUPABASE_URL}/functions/v1/submit-contest`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session?.access_token}`,
+            "apikey": SUPABASE_ANON,
+          },
+          body: JSON.stringify({ contestId: contest.id, currentTaskRows }),
+        }).then(r=>r.json());
+        const result = await Promise.race([call, timeout]);
+        if (result?.success) return result;
+        console.warn(`Edge Function attempt ${i+1} failed:`, result?.error);
+      } catch(e) {
+        console.warn(`Edge Function attempt ${i+1} error:`, e.message);
+      }
+    }
+    return null; // All attempts failed — caller falls back to browser submit
   }
 
   async function submitAll() {
@@ -1877,32 +1938,48 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       showToast("Please wait — saving current task...");
       await new Promise(r=>{ const t=setInterval(()=>{ if(!isSaving.current){clearInterval(t);r();} },200); });
     }
-    // Flush current task before submitting all
-    const saved = await flushTask(items[idx]);
-    if (!saved) {
-      const proceed = window.confirm("⚠️ Current task could not be saved. Submit anyway? (answers for this task will be lost)");
-      if (!proceed) return;
-    }
     const incomplete=items.filter(i=>!tasks[i.id]||tasks[i.id].status==="not_started");
     if (incomplete.length>0&&!confirm(`${incomplete.length} task(s) have no answers. Submit all anyway?`)) return;
     setSubmitting(true);
 
-    const updatedTasks={...tasks};
+    // Build current task rows to send to Edge Function
+    const currentTaskRows = buildCurrentTaskRows(items[idx]);
 
-    // Batch all task IDs that need submitting — include both in_progress and not_started
+    // ── PRIMARY PATH: Edge Function (server-side atomic submit) ──────────────
+    const efResult = await callSubmitEdgeFunction(currentTaskRows);
+
+    if (efResult?.success) {
+      // Edge Function succeeded — update local state and show score
+      const updatedTasks = {...tasks};
+      items.forEach(item=>{
+        if(tasks[item.id]) updatedTasks[item.id]={...tasks[item.id],status:"submitted"};
+      });
+      setTasks(updatedTasks);
+      if (efResult.score) setScore(efResult.score);
+      setSubmitted(true);
+      setSubmitting(false);
+      return;
+    }
+
+    // ── FALLBACK PATH: Browser submit (if Edge Function failed) ──────────────
+    console.warn("Edge Function failed — falling back to browser submit");
+
+    // Flush current task first
+    const saved = await flushTask(items[idx]);
+    if (!saved) {
+      const proceed = window.confirm("⚠️ Current task could not be saved. Submit anyway? (answers for this task will be lost)");
+      if (!proceed) { setSubmitting(false); return; }
+    }
+
+    const updatedTasks={...tasks};
     const inProgressTaskIds = items
       .filter(i=>tasks[i.id]&&(tasks[i.id].status==="in_progress"||tasks[i.id].status==="not_started"))
       .map(i=>tasks[i.id].id);
-
     const missingItems = items.filter(i=>!tasks[i.id]);
 
-    // is_draft update removed — scoring view counts all responses for submitted tasks
-
-    // Batch update tasks status=submitted for all in-progress tasks
     if (inProgressTaskIds.length>0) {
       const {error:te} = await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressTaskIds);
       if (te) {
-        // Retry once
         await new Promise(r=>setTimeout(r,2000));
         await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressTaskIds);
       }
@@ -1911,8 +1988,6 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         if(item) updatedTasks[item.id]={...tasks[item.id],status:"submitted"};
       });
     }
-
-    // Insert missing tasks (shouldn't happen with pre-creation but safety net)
     for (const item of missingItems) {
       const {data:t}=await sb.from("tasks").insert({
         contest_id:contest.id,user_id:user.id,contest_item_id:item.id,
@@ -1920,10 +1995,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       }).select().single();
       if(t)updatedTasks[item.id]=t;
     }
-
     setTasks(updatedTasks);
-
-    // Load final score
     try { const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single(); if(s) setScore(s); } catch(e){}
     setSubmitted(true);
     setSubmitting(false);
