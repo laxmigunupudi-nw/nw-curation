@@ -1807,21 +1807,14 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         rows.push({task_id:task.id, field_name:fieldName, user_value:String(val), golden_value:golden, score:sc, comparison_type:ct, is_draft:false});
       }
       if (rows.length > 0) {
-        const {error:pre} = await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
-        if (pre) {
-          await new Promise(r=>setTimeout(r,2000));
-          const {error:pre2} = await sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
-          if (pre2) { showToast("⚠️ Save failed — please try validating again"); return; }
-        }
+        // Fire and don't wait — show validate immediately, save in background
+        sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
       }
-      // Mark task submitted
-      const {error:pte} = await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
-      if (pte) {
-        await new Promise(r=>setTimeout(r,2000));
-        await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
-      }
+      // Mark task submitted — fire and don't wait
+      sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
       setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"submitted"}}));
     }
+    // Show validate immediately — don't wait for save
     setShowVal(true);
   }
 
