@@ -1569,7 +1569,6 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const [idx,setIdx]=useState(0);
   const [saveStatus,setSaveStatus]=useState('idle'); // idle|saving|saved|failed
   const isSaving = useRef(false);
-  const pendingNav = useRef(null); // queued navigation target idx
   const [answers,setAnswers]=useState({});
   const [loading,setLoading]=useState(true);
   const [submitting,setSubmitting]=useState(false);
@@ -1707,8 +1706,6 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
     if (rows.length === 0) return true;
 
-    // Lock navigation
-    isSaving.current = true;
     if (!silent) setSaveStatus('saving');
 
     // Helper: single save attempt with timeout race and silent null detection
@@ -1742,17 +1739,6 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       }
     } else {
       if (!silent) setSaveStatus('failed');
-    }
-
-    // Release lock and execute any queued navigation
-    isSaving.current = false;
-    if (pendingNav.current !== null && saved) {
-      const target = pendingNav.current;
-      pendingNav.current = null;
-      // Brief pause so user sees "Saved ✓" before navigating
-      await new Promise(r=>setTimeout(r,400));
-      setIdx(target);
-      setShowVal(false);
     }
 
     return saved;
@@ -1823,12 +1809,12 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     try {
       setSubmitting(true);
 
-      // Build current task rows before any async operations
-      const currentTaskRows = buildCurrentTaskRows(items[idx]);
+      // Build ALL task rows from state — complete save on contest close
+      const allTaskRows = buildAllTaskRows(items);
 
       // ── PRIMARY PATH: Edge Function ───────────────────────────────────────
       // Don't fetch score on auto-submit — DB is under load from contest close
-      const efResult = await callSubmitEdgeFunction(currentTaskRows, false);
+      const efResult = await callSubmitEdgeFunction(allTaskRows, false);
 
       if (efResult?.success) {
         // Edge Function succeeded — score will load when user checks Past tab
@@ -1882,6 +1868,28 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     } catch(e) { console.error("Auto-submit error:",e); setSubmitting(false); }
   }
 
+  // Build pre-scored rows for ALL tasks — used by Edge Function on submit
+  function buildAllTaskRows(allItems) {
+    if (contest.mode==="practice") return [];
+    const allRows = [];
+    for (const item of allItems) {
+      const task = tasks[item.id];
+      if (!task) continue;
+      const taskAnswers = answers[task.id] || {};
+      if (Object.keys(taskAnswers).length === 0) continue;
+      const did = item.domain_items?.domain_id;
+      for (const [fieldName, val] of Object.entries(taskAnswers)) {
+        if (!val && val !== 0) continue;
+        const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+        const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
+        const ct = fd?.comparison_type||"as_is";
+        const sc = scoreF(val, golden, ct, contest.semantic_correct_threshold||0.7);
+        allRows.push({task_id:task.id, field_name:fieldName, user_value:String(val), golden_value:golden, score:sc, comparison_type:ct, is_draft:true});
+      }
+    }
+    return allRows;
+  }
+
   // Build pre-scored rows for current task — used by Edge Function
   function buildCurrentTaskRows(item) {
     if (!item) return [];
@@ -1931,20 +1939,16 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   async function submitAll() {
     const open = await checkContestOpen();
     if (!open) return;
-    // Wait if save is in progress
-    if (isSaving.current) {
-      showToast("Please wait — saving current task...");
-      await new Promise(r=>{ const t=setInterval(()=>{ if(!isSaving.current){clearInterval(t);r();} },200); });
-    }
+    // buildAllTaskRows captures everything from state — no need to wait for background saves
     const incomplete=items.filter(i=>!tasks[i.id]||tasks[i.id].status==="not_started");
     if (incomplete.length>0&&!confirm(`${incomplete.length} task(s) have no answers. Submit all anyway?`)) return;
     setSubmitting(true);
 
-    // Build current task rows to send to Edge Function
-    const currentTaskRows = buildCurrentTaskRows(items[idx]);
+    // Build ALL task rows from state — complete save on submit
+    const allTaskRows = buildAllTaskRows(items);
 
     // ── PRIMARY PATH: Edge Function (server-side atomic submit) ──────────────
-    const efResult = await callSubmitEdgeFunction(currentTaskRows);
+    const efResult = await callSubmitEdgeFunction(allTaskRows);
 
     if (efResult?.success) {
       // Edge Function succeeded — update local state and show score
@@ -2121,11 +2125,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             const st=tSt(item);
             return (
               <div key={item.id} className={`td td-${st} ${i===idx?"td-act":""}`}
-                onClick={async()=>{
-                  if(isSaving.current){pendingNav.current=i;return;}
-                  const saved=await flushTask(items[idx]);
-                  if(saved){setIdx(i);setShowVal(false);}
-                  else{pendingNav.current=i;} // queue nav for after retry resolves
+                onClick={()=>{
+                  flushTask(items[idx]); setIdx(i); setShowVal(false);
                 }} title={`Task ${i+1} — ${st}`}>
                 {i+1}
               </div>
@@ -2181,14 +2182,10 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             )}
             <div className="fx g2">
               <button className="bg bsm" disabled={idx===0} onClick={async()=>{
-                if(isSaving.current){pendingNav.current=idx-1;return;}
-                const saved=await flushTask(items[idx]);
-                if(saved){setIdx(i=>i-1);setShowVal(false);}
+                flushTask(items[idx]); setIdx(i=>i-1); setShowVal(false);
               }}>← Prev</button>
-              <button className="bg bsm" disabled={idx===items.length-1} onClick={async()=>{
-                if(isSaving.current){pendingNav.current=idx+1;return;}
-                const saved=await flushTask(items[idx]);
-                if(saved){setIdx(i=>i+1);setShowVal(false);}
+              <button className="bg bsm" disabled={idx===items.length-1} onClick={()=>{
+                flushTask(items[idx]); setIdx(i=>i+1); setShowVal(false);
               }}>Next →</button>
             </div>
           </div>
@@ -2254,13 +2251,11 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               );
             })}
             <div className="fx g3 jb" style={{marginTop:16}}>
-              <button className="bg bsm" disabled={idx===0} onClick={async()=>{
-                if(isSaving.current){pendingNav.current=idx-1;return;}
-                await flushTask(items[idx]);setIdx(i=>i-1);setShowVal(false);
+              <button className="bg bsm" disabled={idx===0} onClick={()=>{
+                flushTask(items[idx]); setIdx(i=>i-1); setShowVal(false);
               }}>← Prev task</button>
-              {idx<items.length-1&&<button className="bg bsm" onClick={async()=>{
-                if(isSaving.current){pendingNav.current=idx+1;return;}
-                await flushTask(items[idx]);setIdx(i=>i+1);setShowVal(false);
+              {idx<items.length-1&&<button className="bg bsm" onClick={()=>{
+                flushTask(items[idx]); setIdx(i=>i+1); setShowVal(false);
               }}>Next task →</button>}
             </div>
           </div>
@@ -2288,9 +2283,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             </div>
             <div className="fx g3 jb" style={{marginTop:20}}>
               <button className="bg bsm" disabled={idx===0} onClick={async()=>{
-  if(isSaving.current){pendingNav.current=idx-1;return;}
-  const saved=await flushTask(cur);
-  if(!saved){return;} // blocked — save failed, user sees indicator
+  flushTask(cur);
   const open=await checkContestOpen();
   if(open){setIdx(i=>i-1);setShowVal(false);}
 }}>← Previous</button>
@@ -2303,9 +2296,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
                 )}
                 {idx<items.length-1&&(
                   <button className="bg bsm" onClick={async()=>{
-                    if(isSaving.current){pendingNav.current=idx+1;return;}
-                    const saved=await flushTask(cur);
-                    if(!saved){return;} // blocked — save failed
+                    flushTask(cur);
                     const open=await checkContestOpen();
                     if(open){setIdx(i=>i+1);setShowVal(false);}
                   }}>Next →</button>
