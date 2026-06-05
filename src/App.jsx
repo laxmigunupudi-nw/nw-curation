@@ -1643,7 +1643,9 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     const allSub=(ci||[]).length>0&&(ci||[]).every(item=>tm[item.id]?.status==="submitted");
     if (allSub&&contest.mode==="assessment") {
       setSubmitted(true);
-      try { const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single(); setScore(s); } catch(e){}
+      // Stagger score queries — random delay prevents thundering herd
+      await new Promise(r=>setTimeout(r, Math.random()*3000));
+      try { const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single(); if(s) setScore(s); } catch(e){}
     }
     setLoading(false);
   }
@@ -1832,10 +1834,11 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       const currentTaskRows = buildCurrentTaskRows(items[idx]);
 
       // ── PRIMARY PATH: Edge Function ───────────────────────────────────────
-      const efResult = await callSubmitEdgeFunction(currentTaskRows);
+      // Don't fetch score on auto-submit — DB is under load from contest close
+      const efResult = await callSubmitEdgeFunction(currentTaskRows, false);
 
       if (efResult?.success) {
-        // Edge Function succeeded
+        // Edge Function succeeded — score will load when user checks Past tab
         if (contest.mode==="assessment" && efResult.score) setScore(efResult.score);
         setSubmitting(false);
         return;
@@ -1878,6 +1881,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       }
 
       if (contest.mode==="assessment") {
+        // Stagger score queries — random delay prevents thundering herd
+        await new Promise(r=>setTimeout(r, Math.random()*5000));
         try { const {data:s} = await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single(); if(s) setScore(s); } catch(e){}
       }
       setSubmitting(false);
@@ -1904,7 +1909,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   }
 
   // Call submit-contest Edge Function — primary submit path
-  async function callSubmitEdgeFunction(currentTaskRows=[]) {
+  async function callSubmitEdgeFunction(currentTaskRows=[], fetchScore=true) {
     const delays = [0, 3000, 6000];
     for (let i=0; i<delays.length; i++) {
       if (delays[i]>0) await new Promise(r=>setTimeout(r,delays[i]));
@@ -1918,7 +1923,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             "Authorization": `Bearer ${session?.access_token}`,
             "apikey": SUPABASE_ANON,
           },
-          body: JSON.stringify({ contestId: contest.id, currentTaskRows }),
+          body: JSON.stringify({ contestId: contest.id, currentTaskRows, fetchScore }),
         }).then(r=>r.json());
         const result = await Promise.race([call, timeout]);
         if (result?.success) return result;
@@ -1996,6 +2001,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       if(t)updatedTasks[item.id]=t;
     }
     setTasks(updatedTasks);
+    // Stagger score queries — random delay prevents thundering herd on contest close
+    await new Promise(r=>setTimeout(r, Math.random()*3000));
     try { const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single(); if(s) setScore(s); } catch(e){}
     setSubmitted(true);
     setSubmitting(false);
