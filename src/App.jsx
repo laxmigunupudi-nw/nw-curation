@@ -815,10 +815,18 @@ function AdminContests({ showToast }) {
         }
       }
       if (taskRows.length > 0) {
-        // Insert in batches of 100 to avoid payload limits
-        for (let i=0; i<taskRows.length; i+=100) {
-          const {error:tce} = await sb.from("tasks").upsert(taskRows.slice(i,i+100), {onConflict:"contest_id,user_id,contest_item_id",ignoreDuplicates:true});
-          if (tce) { showToast("⚠️ Task pre-creation error — retry activation"); throw tce; }
+        // Insert in batches of 500
+        const batchSize = 500;
+        let batchErrors = 0;
+        for (let i=0; i<taskRows.length; i+=batchSize) {
+          const {error:tce} = await sb.from("tasks").upsert(taskRows.slice(i,i+batchSize), {onConflict:"contest_id,user_id,contest_item_id",ignoreDuplicates:true});
+          if (tce) {
+            batchErrors++;
+            console.error("Task pre-creation batch error:", tce.message);
+          }
+        }
+        if (batchErrors > 0) {
+          showToast(`⚠️ ${batchErrors} batch(es) failed — some tasks may be missing. Run SQL fix or retry.`, "error");
         }
       }
       showToast(`Contest activated — ${taskRows.length} tasks pre-created`);
