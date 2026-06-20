@@ -1174,6 +1174,7 @@ function AdminProgress() {
           if(!taskMap[t.user_id]) taskMap[t.user_id]={submitted:0,in_progress:0,not_started:0};
           taskMap[t.user_id][t.status]=(taskMap[t.user_id][t.status]||0)+1;
         });
+        console.log("allTasks count:", (allTasks||[]).length, "taskMap keys:", Object.keys(taskMap).length, "assigned:", (assigned||[]).length);
 
         // Build full list from all assigned users
         const enriched = (assigned||[]).map(row=>{
@@ -1181,7 +1182,10 @@ function AdminProgress() {
           const score = scoreMap[uid]||null;
           const tstat = taskMap[uid]||{submitted:0,in_progress:0,not_started:0};
           const tasksDone = tstat.submitted + tstat.in_progress;
-          const status = tstat.submitted>0&&tstat.in_progress===0&&tstat.not_started===0 ? 'submitted'
+          // If user has a score they must have submitted — use score as primary status indicator
+          // taskMap may be incomplete due to RLS only showing admin's own tasks
+          const status = score ? 'submitted'
+                       : tstat.submitted>0&&tstat.in_progress===0&&tstat.not_started===0 ? 'submitted'
                        : tstat.in_progress>0 ? 'in_progress' : 'not_started';
           return {
             user_id: uid,
