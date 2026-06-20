@@ -1577,6 +1577,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const [idx,setIdx]=useState(0);
   const [saveStatus,setSaveStatus]=useState('idle'); // idle|saving|saved|failed
   const isSaving = useRef(false);
+  const practiceAnswersRef = useRef({}); // stores answers at validate time — avoids async state issue
   const [answers,setAnswers]=useState({});
   const [loading,setLoading]=useState(true);
   const [submitting,setSubmitting]=useState(false);
@@ -1808,6 +1809,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
       setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"submitted"}}));
     }
+    // Store answers in ref before showing validate — avoids async state update issue
+    practiceAnswersRef.current = answers[task?.id] || answers[item.id] || {};
     // Show validate immediately — don't wait for save
     setShowVal(true);
   }
@@ -1919,6 +1922,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
   // Call submit-contest Edge Function — primary submit path
   async function callSubmitEdgeFunction(currentTaskRows=[], fetchScore=true) {
+    // Random stagger 0-5 seconds — prevents 150 users hitting EF simultaneously (EarlyDrop)
+    await new Promise(r=>setTimeout(r, Math.random()*5000));
     const delays = [0, 3000, 6000];
     for (let i=0; i<delays.length; i++) {
       if (delays[i]>0) await new Promise(r=>setTimeout(r,delays[i]));
@@ -1932,7 +1937,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             "Authorization": `Bearer ${session?.access_token}`,
             "apikey": SUPABASE_ANON,
           },
-          body: JSON.stringify({ contestId: contest.id, currentTaskRows, fetchScore }),
+          body: JSON.stringify({ contestId: contest.id, allTaskRows: currentTaskRows, fetchScore }),
         }).then(r=>r.json());
         const result = await Promise.race([call, timeout]);
         if (result?.success) return result;
@@ -2111,7 +2116,12 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     }
     aa = found.filter(Boolean);
   }
-  const task=tasks[cur.id]; const ta=answers[task?.id]||answers[cur.id]||{}; const isSub=task?.status==="submitted";
+  const task=tasks[cur.id];
+  // Use practiceAnswersRef if available (avoids async state issue in practice validate)
+  const ta=showVal&&contest.mode==="practice"
+    ? (Object.keys(practiceAnswersRef.current).length>0 ? practiceAnswersRef.current : answers[task?.id]||answers[cur.id]||{})
+    : answers[task?.id]||answers[cur.id]||{};
+  const isSub=task?.status==="submitted";
   const ctx=af.filter(f=>f.field_role==="context"); // always show all context fields
   const imgs=af.filter(f=>f.field_role==="image");
   const cure=af.filter(f=>f.field_role==="curate"&&(aa.length===0||aa.includes(f.field_name))&&String(di?.json_value?.[f.field_name]||"").trim()!=="");
@@ -2232,6 +2242,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             {cure.map(f=>{
               const uv=ta[f.field_name]||"";
               const gv=String(di?.json_value?.[f.field_name]||"");
+              if (!gv) return null; // skip fields with no golden value — not scoreable
               const isMulti=f.comparison_type==="multiselect"||f.comparison_type==="list";
               const sc2=scoreF(uv,gv,f.comparison_type,contest.semantic_correct_threshold||0.7);
               const ok=f.comparison_type==="semantic"?sc2>=(contest.semantic_correct_threshold||0.7):f.comparison_type==="multiselect"||f.comparison_type==="list"?sc2>=0.99:sc2===1;
