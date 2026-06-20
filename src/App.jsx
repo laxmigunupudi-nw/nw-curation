@@ -1158,7 +1158,7 @@ function AdminProgress() {
         const [{data:p,error:pe},{data:f,error:fe},{data:allTasks},{data:assigned}] = await Promise.all([
           sb.from("v_user_contest_accuracy").select("*").eq("contest_id",sel),
           sb.from("v_field_accuracy").select("*").eq("contest_id",sel).order("field_accuracy_pct"),
-          sb.from("tasks").select("user_id,status").eq("contest_id",sel),
+          sb.from("tasks").select("user_id,status").eq("contest_id",sel).limit(10000),
           sb.from("contest_users").select("user_id").eq("contest_id",sel),
         ]);
         if(pe) console.error("Progress error:",pe.message);
@@ -1686,6 +1686,16 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       await new Promise(r=>setTimeout(r, Math.random()*3000));
       try { const {data:s}=await sb.from("v_user_contest_accuracy").select("*").eq("contest_id",contest.id).eq("user_id",user.id).single(); if(s) setScore(s); } catch(e){}
     }
+
+    // Recovery: if contest is closed and user has unsubmitted tasks with responses — auto-fix
+    if (contest.status==="closed" && !allSub && contest.mode==="assessment") {
+      const hasResponses = Object.values(am).some(r=>Object.keys(r).length>0);
+      if (hasResponses) {
+        console.log("Recovery: contest closed, fixing unsubmitted tasks with responses");
+        await autoSubmitAll();
+      }
+    }
+
     setLoading(false);
   }
 
