@@ -1155,10 +1155,19 @@ function AdminProgress() {
       (allUsers||[]).forEach(u=>{ if(u.id) userMap[u.id]=u; });
 
       if (con?.mode==="assessment") {
-        const [{data:p,error:pe},{data:f,error:fe},{data:allTasks},{data:assigned}] = await Promise.all([
+        // Fetch tasks in pages of 1000 to bypass Supabase max row limit
+        let allTasks = [], page = 0, pageSize = 1000;
+        while (true) {
+          const {data:batch} = await sb.from("tasks").select("user_id,status")
+            .eq("contest_id",sel).range(page*pageSize, (page+1)*pageSize-1);
+          if (!batch||batch.length===0) break;
+          allTasks = [...allTasks, ...batch];
+          if (batch.length < pageSize) break;
+          page++;
+        }
+        const [{data:p,error:pe},{data:f,error:fe},{data:assigned}] = await Promise.all([
           sb.from("v_user_contest_accuracy").select("*").eq("contest_id",sel),
           sb.from("v_field_accuracy").select("*").eq("contest_id",sel).order("field_accuracy_pct"),
-          sb.from("tasks").select("user_id,status").eq("contest_id",sel).limit(10000),
           sb.from("contest_users").select("user_id").eq("contest_id",sel),
         ]);
         if(pe) console.error("Progress error:",pe.message);
@@ -1174,7 +1183,7 @@ function AdminProgress() {
           if(!taskMap[t.user_id]) taskMap[t.user_id]={submitted:0,in_progress:0,not_started:0};
           taskMap[t.user_id][t.status]=(taskMap[t.user_id][t.status]||0)+1;
         });
-        console.log("allTasks count:", (allTasks||[]).length, "taskMap keys:", Object.keys(taskMap).length, "assigned:", (assigned||[]).length);
+
 
         // Build full list from all assigned users
         const enriched = (assigned||[]).map(row=>{
