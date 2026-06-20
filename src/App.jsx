@@ -830,6 +830,37 @@ function AdminContests({ showToast }) {
         }
       }
       showToast(`Contest activated — ${taskRows.length} tasks pre-created`);
+    } else if (next==="closed") {
+      // Auto-fix: submit all tasks that have responses but are not yet submitted
+      const {data:tasksWithResponses} = await sb
+        .from("tasks")
+        .select("id,user_id")
+        .eq("contest_id",c.id)
+        .neq("status","submitted");
+      
+      if (tasksWithResponses && tasksWithResponses.length > 0) {
+        // Find which of these tasks have at least one response
+        const taskIds = tasksWithResponses.map(t=>t.id);
+        const {data:responseTasks} = await sb
+          .from("responses")
+          .select("task_id")
+          .in("task_id",taskIds);
+        
+        const taskIdsWithResponses = [...new Set((responseTasks||[]).map(r=>r.task_id))];
+        
+        if (taskIdsWithResponses.length > 0) {
+          const now = new Date().toISOString();
+          const batchSize = 50;
+          for (let i=0; i<taskIdsWithResponses.length; i+=batchSize) {
+            const batch = taskIdsWithResponses.slice(i,i+batchSize);
+            await sb.from("tasks")
+              .update({status:"submitted", submitted_at:now})
+              .in("id",batch);
+          }
+          console.log(`Auto-submitted ${taskIdsWithResponses.length} tasks with responses on contest close`);
+        }
+      }
+      showToast(`Contest closed`);
     } else {
       showToast(`Contest ${next}`);
     }
@@ -1664,7 +1695,12 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     if (existing) {
       // Update to in_progress if not_started
       if (existing.status==="not_started") {
-        await sb.from("tasks").update({status:"in_progress"}).eq("id",existing.id);
+        // Retry up to 3 times — status update must succeed for live progress to show correctly
+        for (let i=0; i<3; i++) {
+          const {error} = await sb.from("tasks").update({status:"in_progress",started_at:new Date().toISOString()}).eq("id",existing.id);
+          if (!error) break;
+          await new Promise(r=>setTimeout(r,1000));
+        }
         setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"in_progress"}}));
       }
       return existing;
@@ -1742,9 +1778,13 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
     if (saved) {
       if (!silent) { setSaveStatus('saved'); setTimeout(()=>setSaveStatus('idle'),2000); }
-      // Update task status to in_progress if not_started
+      // Update task status to in_progress if not_started — retry 3 times
       if (task.status==="not_started") {
-        await sb.from("tasks").update({status:"in_progress"}).eq("id",task.id);
+        for (let i=0; i<3; i++) {
+          const {error} = await sb.from("tasks").update({status:"in_progress",started_at:new Date().toISOString()}).eq("id",task.id);
+          if (!error) break;
+          await new Promise(r=>setTimeout(r,1000));
+        }
         setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"in_progress"}}));
       }
     } else {
@@ -1927,7 +1967,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   // Call submit-contest Edge Function — primary submit path
   async function callSubmitEdgeFunction(currentTaskRows=[], fetchScore=true) {
     // Random stagger 0-5 seconds — prevents 150 users hitting EF simultaneously (EarlyDrop)
-    await new Promise(r=>setTimeout(r, Math.random()*5000));
+    // Stagger 0-3s — prevents EarlyDrop when many users submit simultaneously
+    await new Promise(r=>setTimeout(r, Math.random()*3000));
     const delays = [0, 3000, 6000];
     for (let i=0; i<delays.length; i++) {
       if (delays[i]>0) await new Promise(r=>setTimeout(r,delays[i]));
