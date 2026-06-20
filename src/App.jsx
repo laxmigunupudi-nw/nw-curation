@@ -364,7 +364,7 @@ function AdminUsers({ showToast }) {
 
   async function load2() {
     setLoad(true);
-    const {data} = await sb.from("users").select("*").eq("role","participant").order("created_at",{ascending:false});
+    const {data} = await sb.from("users").select("*").eq("role","participant").order("created_at",{ascending:false}).limit(5000);
     setUsers(data||[]); setLoad(false);
   }
   useEffect(()=>{load2();},[]);
@@ -786,7 +786,7 @@ function AdminContests({ showToast }) {
     const [{data:c},{data:d},{data:u}] = await Promise.all([
       sb.from("contests").select("*, contest_domains(domain_id,task_count,domains(name)), contest_users(count)").order("created_at",{ascending:false}),
       sb.from("domains").select("id,name"),
-      sb.from("users").select("id,email,full_name").eq("role","participant").eq("status","active"),
+      sb.from("users").select("id,email,full_name").eq("role","participant").eq("status","active").limit(5000),
     ]);
     setContests(c||[]); setDomains(d||[]); setUsers(u||[]); setLoad(false);
   }
@@ -1150,7 +1150,15 @@ function AdminProgress() {
     const con=contests.find(c=>c.id===sel);
     try {
       // Fetch users separately — views don't support join syntax
-      const {data:allUsers} = await sb.from("users").select("id,email,full_name");
+      // Paginate users to avoid 1000 row limit
+        let allUsers = [], upage = 0;
+        while (true) {
+          const {data:batch} = await sb.from("users").select("id,email,full_name").range(upage*1000,(upage+1)*1000-1);
+          if (!batch||batch.length===0) break;
+          allUsers = [...allUsers,...batch];
+          if (batch.length<1000) break;
+          upage++;
+        }
       const userMap = {};
       (allUsers||[]).forEach(u=>{ if(u.id) userMap[u.id]=u; });
 
@@ -1419,7 +1427,7 @@ function UserContests({ user, onOpen }) {
     const ids=cu.map(r=>r.contest_id);
     const [{data:all},{data:tasks},{data:scores}]=await Promise.all([
       sb.from("contests").select("*, contest_domains(domain_id,task_count,domains(name))").in("id",ids).order("created_at",{ascending:false}),
-      sb.from("tasks").select("contest_id,status").eq("user_id",user.id),
+      sb.from("tasks").select("contest_id,status").eq("user_id",user.id).limit(5000),
       sb.from("v_user_contest_accuracy").select("*").eq("user_id",user.id),
     ]);
     const tm={};
@@ -1678,12 +1686,12 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
     const dids=[...new Set((ci||[]).map(i=>i.domain_items?.domain_id).filter(Boolean))];
     // Fix 3: Single query for all domain fields instead of one per domain
-    const {data:allFields} = await sb.from("domain_fields").select("*").in("domain_id",dids).order("display_order");
+    const {data:allFields} = await sb.from("domain_fields").select("*").in("domain_id",dids).order("display_order").limit(5000);
     const fm={};
     (allFields||[]).forEach(f=>{ if(!fm[f.domain_id]) fm[f.domain_id]=[]; fm[f.domain_id].push(f); });
     setFields(fm);
 
-    const {data:et}=await sb.from("tasks").select("*, responses(*)").eq("contest_id",contest.id).eq("user_id",user.id);
+    const {data:et}=await sb.from("tasks").select("*, responses(*)").eq("contest_id",contest.id).eq("user_id",user.id).limit(500);
     const tm={}; const am={};
     (et||[]).forEach(t=>{
       tm[t.contest_item_id]=t;
