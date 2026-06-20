@@ -1707,6 +1707,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     for (const [fieldName, val] of Object.entries(taskAnswers)) {
       if (!val && val !== 0) continue;
       const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+      if (!golden) continue; // skip fields with no golden value — not scoreable
       const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
       const ct = fd?.comparison_type||"as_is";
       const sc = scoreF(val, golden, ct, contest.semantic_correct_threshold||0.7);
@@ -1796,6 +1797,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       for (const [fieldName, val] of Object.entries(taskAnswers)) {
         if (!val && val !== 0) continue;
         const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+        if (!golden) continue; // skip fields with no golden value
         const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
         const ct = fd?.comparison_type||"as_is";
         const sc = scoreF(val, golden, ct, contest.semantic_correct_threshold||0.7);
@@ -1892,6 +1894,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       for (const [fieldName, val] of Object.entries(taskAnswers)) {
         if (!val && val !== 0) continue;
         const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+        if (!golden) continue; // skip fields with no golden value — not scoreable
         const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
         const ct = fd?.comparison_type||"as_is";
         const sc = scoreF(val, golden, ct, contest.semantic_correct_threshold||0.7);
@@ -1912,6 +1915,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     for (const [fieldName, val] of Object.entries(taskAnswers)) {
       if (!val && val !== 0) continue;
       const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+      if (!golden) continue; // skip fields with no golden value — not scoreable
       const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
       const ct = fd?.comparison_type||"as_is";
       const sc = scoreF(val, golden, ct, contest.semantic_correct_threshold||0.7);
