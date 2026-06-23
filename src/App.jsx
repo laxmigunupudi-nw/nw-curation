@@ -1898,10 +1898,16 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
       // ── PRIMARY PATH: Edge Function ───────────────────────────────────────
       // Don't fetch score on auto-submit — DB is under load from contest close
-      const efResult = await callSubmitEdgeFunction(allTaskRows, false);
+      // stagger=true — all browsers fire simultaneously on contest close
+      const efResult = await callSubmitEdgeFunction(allTaskRows, false, true);
 
       if (efResult?.success) {
-        // Edge Function succeeded — score will load when user checks Past tab
+        // Edge Function succeeded — update local task state to submitted
+        const updatedTasks = {...tasks};
+        items.forEach(item=>{
+          if(tasks[item.id]) updatedTasks[item.id]={...tasks[item.id], status:"submitted"};
+        });
+        setTasks(updatedTasks);
         if (contest.mode==="assessment" && efResult.score) setScore(efResult.score);
         setSubmitting(false);
         return;
@@ -1910,36 +1916,62 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       // ── FALLBACK PATH: Browser submit ─────────────────────────────────────
       console.warn("Edge Function failed on auto-submit — falling back to browser submit");
 
-      // Save current task first
+      // Step 1: Save current task first
       if (items[idx]) {
         await flushTask(items[idx], {silent:true});
       }
 
+      // Step 2: Upsert ALL response rows from React state — critical fix
+      // Without this, any task where flushTask failed during navigation loses its answers
+      const fallbackRows = buildAllTaskRows(items);
+      if (fallbackRows.length > 0) {
+        const batchSize = 100;
+        for (let i=0; i<fallbackRows.length; i+=batchSize) {
+          try {
+            await sb.from("responses")
+              .upsert(fallbackRows.slice(i, i+batchSize), {onConflict:"task_id,field_name"});
+          } catch(e) { console.warn("autoSubmitAll fallback response upsert batch failed:", e); }
+        }
+      }
+
+      // Step 3: Fetch latest task state from DB
       const {data:latestItems} = await sb.from("contest_items")
         .select("*, domain_items(*)")
         .eq("contest_id",contest.id).order("item_order");
-      const {data:latestTasks} = await sb.from("tasks").select("*, responses(*)")
+      const {data:latestTasks} = await sb.from("tasks").select("id,contest_item_id,status")
         .eq("contest_id",contest.id).eq("user_id",user.id);
       const tm={};
       (latestTasks||[]).forEach(t=>{ tm[t.contest_item_id]=t; });
 
-      const inProgressIds = (latestItems||[])
-        .filter(item=>tm[item.id]&&(tm[item.id].status==="in_progress"||tm[item.id].status==="not_started"))
+      // Step 4: Mark ALL non-submitted tasks as submitted (not_started + in_progress)
+      const now = new Date().toISOString();
+      const notSubmittedIds = (latestItems||[])
+        .filter(item=>tm[item.id] && tm[item.id].status!=="submitted")
         .map(item=>tm[item.id].id);
 
-      if (inProgressIds.length>0) {
-        const {error:ate} = await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressIds);
-        if (ate) {
-          await new Promise(r=>setTimeout(r,2000));
-          await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressIds);
+      if (notSubmittedIds.length>0) {
+        // Batch in groups of 50 — retry once on failure
+        const batchSize = 50;
+        for (let i=0; i<notSubmittedIds.length; i+=batchSize) {
+          const batch = notSubmittedIds.slice(i, i+batchSize);
+          const {error} = await sb.from("tasks")
+            .update({status:"submitted", submitted_at:now})
+            .in("id", batch);
+          if (error) {
+            await new Promise(r=>setTimeout(r,2000));
+            await sb.from("tasks")
+              .update({status:"submitted", submitted_at:now})
+              .in("id", batch);
+          }
         }
       }
 
+      // Step 5: Create task rows for items that have no task row at all
       const missingItems = (latestItems||[]).filter(item=>!tm[item.id]);
       for (const item of missingItems) {
         await sb.from("tasks").insert({
           contest_id:contest.id, user_id:user.id, contest_item_id:item.id,
-          status:"submitted", started_at:new Date().toISOString(), submitted_at:new Date().toISOString(),
+          status:"submitted", started_at:now, submitted_at:now,
         });
       }
 
@@ -1996,10 +2028,10 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   }
 
   // Call submit-contest Edge Function — primary submit path
-  async function callSubmitEdgeFunction(currentTaskRows=[], fetchScore=true) {
-    // Random stagger 0-5 seconds — prevents 150 users hitting EF simultaneously (EarlyDrop)
-    // Stagger 0-3s — prevents EarlyDrop when many users submit simultaneously
-    await new Promise(r=>setTimeout(r, Math.random()*3000));
+  // stagger=true only for auto-submit on contest close (many browsers fire simultaneously)
+  // stagger=false for manual Submit All (user clicks button — naturally spread out)
+  async function callSubmitEdgeFunction(currentTaskRows=[], fetchScore=true, stagger=false) {
+    if (stagger) await new Promise(r=>setTimeout(r, Math.random()*3000));
     const delays = [0, 3000, 6000];
     for (let i=0; i<delays.length; i++) {
       if (delays[i]>0) await new Promise(r=>setTimeout(r,delays[i]));
@@ -2037,7 +2069,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     const allTaskRows = buildAllTaskRows(items);
 
     // ── PRIMARY PATH: Edge Function (server-side atomic submit) ──────────────
-    const efResult = await callSubmitEdgeFunction(allTaskRows);
+    const efResult = await callSubmitEdgeFunction(allTaskRows, true, false); // no stagger — manual submit
 
     if (efResult?.success) {
       // Edge Function succeeded — update local state and show score
@@ -2055,37 +2087,58 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     // ── FALLBACK PATH: Browser submit (if Edge Function failed) ──────────────
     console.warn("Edge Function failed — falling back to browser submit");
 
-    // Flush current task first
-    const saved = await flushTask(items[idx]);
-    if (!saved) {
-      const proceed = window.confirm("⚠️ Current task could not be saved. Submit anyway? (answers for this task will be lost)");
-      if (!proceed) { setSubmitting(false); return; }
+    // Step 1: Upsert ALL response rows from React state — critical fix
+    // Without this, any task where flushTask failed during navigation loses its answers
+    const fallbackRows = buildAllTaskRows(items);
+    if (fallbackRows.length > 0) {
+      const batchSize = 100;
+      for (let i=0; i<fallbackRows.length; i+=batchSize) {
+        try {
+          await sb.from("responses")
+            .upsert(fallbackRows.slice(i, i+batchSize), {onConflict:"task_id,field_name"});
+        } catch(e) { console.warn("submitAll fallback response upsert batch failed:", e); }
+      }
     }
 
-    const updatedTasks={...tasks};
-    const inProgressTaskIds = items
-      .filter(i=>tasks[i.id]&&(tasks[i.id].status==="in_progress"||tasks[i.id].status==="not_started"))
-      .map(i=>tasks[i.id].id);
-    const missingItems = items.filter(i=>!tasks[i.id]);
+    const now = new Date().toISOString();
+    const updatedTasks = {...tasks};
 
-    if (inProgressTaskIds.length>0) {
-      const {error:te} = await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressTaskIds);
-      if (te) {
-        await new Promise(r=>setTimeout(r,2000));
-        await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).in("id",inProgressTaskIds);
+    // Step 2: Mark ALL non-submitted tasks as submitted (not_started + in_progress)
+    const notSubmittedTaskIds = items
+      .filter(i=>tasks[i.id] && tasks[i.id].status!=="submitted")
+      .map(i=>tasks[i.id].id);
+
+    if (notSubmittedTaskIds.length>0) {
+      const batchSize = 50;
+      for (let i=0; i<notSubmittedTaskIds.length; i+=batchSize) {
+        const batch = notSubmittedTaskIds.slice(i, i+batchSize);
+        const {error} = await sb.from("tasks")
+          .update({status:"submitted", submitted_at:now})
+          .in("id", batch);
+        if (error) {
+          await new Promise(r=>setTimeout(r,2000));
+          await sb.from("tasks")
+            .update({status:"submitted", submitted_at:now})
+            .in("id", batch);
+        }
       }
-      inProgressTaskIds.forEach(tid=>{
+      // Update local state
+      notSubmittedTaskIds.forEach(tid=>{
         const item = items.find(i=>tasks[i.id]?.id===tid);
-        if(item) updatedTasks[item.id]={...tasks[item.id],status:"submitted"};
+        if(item) updatedTasks[item.id]={...tasks[item.id], status:"submitted", submitted_at:now};
       });
     }
+
+    // Step 3: Create task rows for items that have no task row at all
+    const missingItems = items.filter(i=>!tasks[i.id]);
     for (const item of missingItems) {
-      const {data:t}=await sb.from("tasks").insert({
-        contest_id:contest.id,user_id:user.id,contest_item_id:item.id,
-        status:"submitted",started_at:new Date().toISOString(),submitted_at:new Date().toISOString(),
+      const {data:t} = await sb.from("tasks").insert({
+        contest_id:contest.id, user_id:user.id, contest_item_id:item.id,
+        status:"submitted", started_at:now, submitted_at:now,
       }).select().single();
-      if(t)updatedTasks[item.id]=t;
+      if(t) updatedTasks[item.id]=t;
     }
+
     setTasks(updatedTasks);
     // Stagger score queries — random delay prevents thundering herd on contest close
     await new Promise(r=>setTimeout(r, Math.random()*3000));
