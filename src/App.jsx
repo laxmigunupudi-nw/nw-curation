@@ -232,7 +232,7 @@ function LoginPage({ onLogin }) {
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"var(--bg)"}}>
       <div style={{width:"100%",maxWidth:400,padding:"0 20px"}}>
         <div style={{textAlign:"center",marginBottom:32}}>
-          <div style={{fontSize:30,fontWeight:700,letterSpacing:"-0.5px",color:"var(--text)"}}>NextAssess</div>
+          <div style={{fontSize:30,fontWeight:700,letterSpacing:"-0.5px",color:"var(--text)"}}>NextChallenge</div>
           <div style={{color:"var(--text3)",marginTop:6,fontSize:14}}>Retail Item Quality Assessment</div>
         </div>
         <div className="card" style={{borderRadius:"var(--r3)",padding:28,boxShadow:"var(--shadow2)"}}>
@@ -269,7 +269,7 @@ function AdminShell({ user, onLogout }) {
       <Toast t={toast}/>
       <div className="sidebar">
         <div style={{padding:"20px 16px 12px"}}>
-          <div style={{fontSize:15,fontWeight:700,letterSpacing:"-0.4px",color:"var(--text)"}}>NextAssess</div>
+          <div style={{fontSize:15,fontWeight:700,letterSpacing:"-0.4px",color:"var(--text)"}}>NextChallenge</div>
           <div style={{fontSize:10,color:"var(--text3)",marginTop:2,fontWeight:600,letterSpacing:".04em",textTransform:"uppercase"}}>Admin</div>
         </div>
         <div className="div" style={{margin:"0 12px"}}/>
@@ -1398,7 +1398,7 @@ function UserShell({ user, onLogout }) {
       <Toast t={toast}/>
       {page!=="task"&&(
         <div className="topbar">
-          <div style={{fontSize:15,fontWeight:700,letterSpacing:"-0.3px"}}>NextAssess</div>
+          <div style={{fontSize:15,fontWeight:700,letterSpacing:"-0.3px"}}>NextChallenge</div>
           <div className="fx g3 ac">
             <span className="sm m2">{user.full_name||user.email}</span>
             <button className="bg bsm" onClick={()=>setPage(page==="profile"?"contests":"profile")}>Profile</button>
