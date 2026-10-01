@@ -2358,7 +2358,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             {ctx.map(f=>(
               <div key={f.field_name}>
                 <div className="xs m3" style={{marginBottom:2}}>{f.field_name}</div>
-                <div className="sm fw5">{String(di?.json_value?.[f.field_name]||"—")}</div>
+                <div className="sm fw5" style={{wordBreak:"break-word",overflowWrap:"anywhere",whiteSpace:"pre-wrap",maxWidth:"100%"}}>{String(di?.json_value?.[f.field_name]||"—")}</div>
               </div>
             ))}
           </div>
