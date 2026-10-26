@@ -2254,6 +2254,9 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const ctx=af.filter(f=>f.field_role==="context"); // always show all context fields
   const imgs=af.filter(f=>f.field_role==="image");
   const cure=af.filter(f=>f.field_role==="curate"&&(aa.length===0||aa.includes(f.field_name))&&String(di?.json_value?.[f.field_name]||"").trim()!=="");
+  // inline_context: read-only fields shown inside the curate list, interleaved by display_order (af is already sorted)
+  const cureSet=new Set(cure);
+  const taskRows=af.filter(f=>f.field_role==="inline_context"||cureSet.has(f));
 
   function tSt(item) { const t=tasks[item.id]; if(!t)return"ns"; if(t.status==="submitted")return"sb"; return"ip"; }
   const inc=items.filter(i=>!tasks[i.id]||tasks[i.id].status!=="submitted").length;
@@ -2419,7 +2422,12 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             </div>
             {cure.length===0&&<div className="sm m3">No curate fields configured for this item.</div>}
             <div style={{display:"flex",flexDirection:"column",gap:14}}>
-              {cure.map(f=>(
+              {taskRows.map(f=>f.field_role==="inline_context"?(
+                <div key={`${cur.id}-ctx-${f.field_name}`} style={{padding:"8px 12px",background:"var(--bg)",border:"1px dashed var(--border)",borderRadius:6}}>
+                  <div className="xs m3" style={{marginBottom:2}}>{f.field_name}</div>
+                  <div className="sm fw5" style={{wordBreak:"break-word",overflowWrap:"anywhere",whiteSpace:"pre-wrap",maxWidth:"100%"}}>{String(di?.json_value?.[f.field_name]||"—")}</div>
+                </div>
+              ):(
                 <CurateField
                   key={`${cur.id}-${f.field_name}`}
                   fieldDef={f}
