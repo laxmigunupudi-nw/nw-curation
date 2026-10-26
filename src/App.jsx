@@ -2254,6 +2254,9 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const ctx=af.filter(f=>f.field_role==="context"); // always show all context fields
   const imgs=af.filter(f=>f.field_role==="image");
   const cure=af.filter(f=>f.field_role==="curate"&&(aa.length===0||aa.includes(f.field_name))&&String(di?.json_value?.[f.field_name]||"").trim()!=="");
+  // inline_context fields interleave with curate fields by display_order
+  const inlineCtx=af.filter(f=>f.field_role==="inline_context");
+  const inlineMixed=[...cure,...inlineCtx].sort((a,b)=>(a.display_order||0)-(b.display_order||0));
 
   function tSt(item) { const t=tasks[item.id]; if(!t)return"ns"; if(t.status==="submitted")return"sb"; return"ip"; }
   const inc=items.filter(i=>!tasks[i.id]||tasks[i.id].status!=="submitted").length;
@@ -2417,9 +2420,15 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               {isSub&&contest.mode==="practice"&&<span className="badge b-green">✓ Submitted</span>}
               {isSub&&contest.mode==="assessment"&&<span className="badge b-blue">Saved</span>}
             </div>
-            {cure.length===0&&<div className="sm m3">No curate fields configured for this item.</div>}
+            {inlineMixed.length===0&&cure.length===0&&<div className="sm m3">No curate fields configured for this item.</div>}
             <div style={{display:"flex",flexDirection:"column",gap:14}}>
-              {cure.map(f=>(
+              {(inlineCtx.length>0?inlineMixed:cure).map(f=>(
+                f.field_role==="inline_context"?(
+                  <div key={f.field_name} style={{padding:"6px 0",borderBottom:"1px solid var(--border)"}}>
+                    <div className="xs m3" style={{marginBottom:2}}>{f.field_name}</div>
+                    <div className="sm fw5" style={{wordBreak:"break-word",overflowWrap:"anywhere",whiteSpace:"pre-wrap",maxWidth:"100%"}}>{String(di?.json_value?.[f.field_name]||"—")}</div>
+                  </div>
+                ):(
                 <CurateField
                   key={`${cur.id}-${f.field_name}`}
                   fieldDef={f}
@@ -2427,7 +2436,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
                   disabled={(isSub&&contest.mode==="practice")||contestClosed}
                   onSave={(fieldName, val)=>saveAns(cur, fieldName, val)}
                 />
-              ))}
+              )))}
             </div>
             <div className="fx g3 jb" style={{marginTop:20}}>
               <button className="bg bsm" disabled={idx===0} onClick={async()=>{
