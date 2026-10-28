@@ -1773,7 +1773,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     const rows = [];
     for (const [fieldName, val] of Object.entries(taskAnswers)) {
       if (!val && val !== 0) continue;
-      const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+      const golden = String(item.domain_items?.json_value?.[fieldName]??"");
       if (!golden) continue; // skip fields with no golden value — not scoreable
       const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
       const ct = fd?.comparison_type||"as_is";
@@ -1867,7 +1867,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       const rows = [];
       for (const [fieldName, val] of Object.entries(taskAnswers)) {
         if (!val && val !== 0) continue;
-        const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+        const golden = String(item.domain_items?.json_value?.[fieldName]??"");
         if (!golden) continue; // skip fields with no golden value
         const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
         const ct = fd?.comparison_type||"as_is";
@@ -1996,7 +1996,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       const did = item.domain_items?.domain_id;
       for (const [fieldName, val] of Object.entries(taskAnswers)) {
         if (!val && val !== 0) continue;
-        const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+        const golden = String(item.domain_items?.json_value?.[fieldName]??"");
         if (!golden) continue; // skip fields with no golden value — not scoreable
         const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
         const ct = fd?.comparison_type||"as_is";
@@ -2017,7 +2017,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     const rows = [];
     for (const [fieldName, val] of Object.entries(taskAnswers)) {
       if (!val && val !== 0) continue;
-      const golden = String(item.domain_items?.json_value?.[fieldName]||"");
+      const golden = String(item.domain_items?.json_value?.[fieldName]??"");
       if (!golden) continue; // skip fields with no golden value — not scoreable
       const fd = (fields[did]||[]).find(f=>f.field_name===fieldName);
       const ct = fd?.comparison_type||"as_is";
@@ -2253,10 +2253,10 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const isSub=task?.status==="submitted";
   const ctx=af.filter(f=>f.field_role==="context"); // always show all context fields
   const imgs=af.filter(f=>f.field_role==="image");
-  const cure=af.filter(f=>f.field_role==="curate"&&(aa.length===0||aa.includes(f.field_name))&&String(di?.json_value?.[f.field_name]||"").trim()!=="");
-  // inline_context: read-only fields shown inside the curate list, interleaved by display_order (af is already sorted)
-  const cureSet=new Set(cure);
-  const taskRows=af.filter(f=>f.field_role==="inline_context"||cureSet.has(f));
+  const cure=af.filter(f=>f.field_role==="curate"&&(aa.length===0||aa.includes(f.field_name))&&String(di?.json_value?.[f.field_name]??"").trim()!=="");
+  // inline_context fields interleave with curate fields by display_order
+  const inlineCtx=af.filter(f=>f.field_role==="inline_context");
+  const inlineMixed=[...cure,...inlineCtx].sort((a,b)=>(a.display_order||0)-(b.display_order||0));
 
   function tSt(item) { const t=tasks[item.id]; if(!t)return"ns"; if(t.status==="submitted")return"sb"; return"ip"; }
   const inc=items.filter(i=>!tasks[i.id]||tasks[i.id].status!=="submitted").length;
@@ -2373,7 +2373,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
             <div className="fw6" style={{marginBottom:12}}>Validation results</div>
             {cure.map(f=>{
               const uv=ta[f.field_name]||"";
-              const gv=String(di?.json_value?.[f.field_name]||"");
+              const gv=String(di?.json_value?.[f.field_name]??"");
               if (!gv) return null; // skip fields with no golden value — not scoreable
               const isMulti=f.comparison_type==="multiselect"||f.comparison_type==="list";
               const sc2=scoreF(uv,gv,f.comparison_type,contest.semantic_correct_threshold||0.7);
@@ -2420,14 +2420,15 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               {isSub&&contest.mode==="practice"&&<span className="badge b-green">✓ Submitted</span>}
               {isSub&&contest.mode==="assessment"&&<span className="badge b-blue">Saved</span>}
             </div>
-            {cure.length===0&&<div className="sm m3">No curate fields configured for this item.</div>}
+            {inlineMixed.length===0&&cure.length===0&&<div className="sm m3">No curate fields configured for this item.</div>}
             <div style={{display:"flex",flexDirection:"column",gap:14}}>
-              {taskRows.map(f=>f.field_role==="inline_context"?(
-                <div key={`${cur.id}-ctx-${f.field_name}`} style={{padding:"8px 12px",background:"var(--bg)",border:"1px dashed var(--border)",borderRadius:6}}>
-                  <div className="xs m3" style={{marginBottom:2}}>{f.field_name}</div>
-                  <div className="sm fw5" style={{wordBreak:"break-word",overflowWrap:"anywhere",whiteSpace:"pre-wrap",maxWidth:"100%"}}>{String(di?.json_value?.[f.field_name]||"—")}</div>
-                </div>
-              ):(
+              {(inlineCtx.length>0?inlineMixed:cure).map(f=>(
+                f.field_role==="inline_context"?(
+                  <div key={f.field_name} style={{padding:"6px 0",borderBottom:"1px solid var(--border)"}}>
+                    <div className="xs m3" style={{marginBottom:2}}>{f.field_name}</div>
+                    <div className="sm fw5" style={{wordBreak:"break-word",overflowWrap:"anywhere",whiteSpace:"pre-wrap",maxWidth:"100%"}}>{String(di?.json_value?.[f.field_name]||"—")}</div>
+                  </div>
+                ):(
                 <CurateField
                   key={`${cur.id}-${f.field_name}`}
                   fieldDef={f}
@@ -2435,7 +2436,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
                   disabled={(isSub&&contest.mode==="practice")||contestClosed}
                   onSave={(fieldName, val)=>saveAns(cur, fieldName, val)}
                 />
-              ))}
+              )))}
             </div>
             <div className="fx g3 jb" style={{marginTop:20}}>
               <button className="bg bsm" disabled={idx===0} onClick={async()=>{
