@@ -2259,9 +2259,6 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   // inline_context: context fields that interleave with curate fields by display_order
   const inlineCtx=af.filter(f=>f.field_role==="inline_context");
   const inlineMixed=[...cure,...annotate,...inlineCtx].sort((a,b)=>(a.display_order||0)-(b.display_order||0));
-  // inline_context fields interleave with curate fields by display_order
-  const inlineCtx=af.filter(f=>f.field_role==="inline_context");
-  const inlineMixed=[...cure,...inlineCtx].sort((a,b)=>(a.display_order||0)-(b.display_order||0));
 
   function tSt(item) { const t=tasks[item.id]; if(!t)return"ns"; if(t.status==="submitted")return"sb"; return"ip"; }
   const inc=items.filter(i=>!tasks[i.id]||tasks[i.id].status!=="submitted").length;
