@@ -201,37 +201,13 @@ async function fetchAllRows(build) {
   }
   return out;
 }
-// Least-used items first, random tie-break; result is in random order. Never repeats an item.
-function pickBalanced(poolIds, n, usage) {
-  const keyed=poolIds.map(id=>({id,r:Math.random()}))
-    .sort((a,b)=>((usage[a.id]||0)-(usage[b.id]||0))||(a.r-b.r))
-    .slice(0,n).map(x=>x.id);
-  for (let i=keyed.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[keyed[i],keyed[j]]=[keyed[j],keyed[i]];}
-  return keyed;
-}
-// Gives each listed user their own set of items (skips users who already have one).
+// Dealing happens in the database (deal_shuffled_items): least-used items first, never repeats an item for a user,
+// fair across all users, safe when several users open at once. Skips users who already have a set.
 async function assignShuffledItems(contestId, userIds) {
-  const [ci,{data:cds},existing]=await Promise.all([
-    fetchAllRows(()=>sb.from("contest_items").select("id, domain_items(domain_id)").eq("contest_id",contestId).order("id")),
-    sb.from("contest_domains").select("domain_id,task_count").eq("contest_id",contestId),
-    fetchAllRows(()=>sb.from("contest_user_items").select("id,user_id,contest_item_id").eq("contest_id",contestId).order("id")),
-  ]);
-  const poolByDomain={};
-  ci.forEach(r=>{const d=r.domain_items?.domain_id; if(!d) return; (poolByDomain[d]=poolByDomain[d]||[]).push(r.id);});
-  const usage={}; const have=new Set();
-  existing.forEach(r=>{usage[r.contest_item_id]=(usage[r.contest_item_id]||0)+1; have.add(r.user_id);});
   for (const uid of userIds) {
-    if (!uid||have.has(uid)) continue;
-    const rows=[]; let ord=1;
-    for (const cd of (cds||[])) {
-      const pool=poolByDomain[cd.domain_id]||[];
-      pickBalanced(pool, Math.min(parseInt(cd.task_count||0),pool.length), usage).forEach(id=>{
-        usage[id]=(usage[id]||0)+1;
-        rows.push({contest_id:contestId,user_id:uid,contest_item_id:id,item_order:ord++});
-      });
-    }
-    // One atomic insert per user. If a parallel tab already assigned this user, the unique keys reject this one.
-    if (rows.length) { const {error}=await sb.from("contest_user_items").insert(rows); if (error) console.warn("shuffle assign skipped:",error.message); }
+    if (!uid) continue;
+    const {error}=await sb.rpc("deal_shuffled_items",{p_contest:contestId,p_user:uid});
+    if (error) throw new Error(error.message);
   }
 }
 
@@ -1709,6 +1685,7 @@ function CurateField({ fieldDef, initialValue, disabled, onSave }) {
 // ── CONTEST TASK VIEW ────────────────────────────────────────
 function ContestTaskView({ contest, user, onClose, showToast }) {
   const [items,setItems]=useState([]);
+  const [assignErr,setAssignErr]=useState("");
   const [tasks,setTasks]=useState({});
   const [fields,setFields]=useState({});
   const [idx,setIdx]=useState(0);
@@ -1763,7 +1740,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     if (contest.shuffle) {
       ci = await fetchMyItems();
       if (!ci.length) { // first open (or user added after activation): deal this user their own set now
-        try { await assignShuffledItems(contest.id,[user.id]); } catch(e) { console.warn(e); }
+        try { await assignShuffledItems(contest.id,[user.id]); setAssignErr(""); }
+        catch(e) { console.warn("shuffle assign failed:",e); setAssignErr(e.message||String(e)); }
         ci = await fetchMyItems();
       }
     } else {
@@ -2322,7 +2300,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   );
 
   const cur=items[idx];
-  if (!cur) return <div style={{padding:40,textAlign:"center",color:"var(--text3)"}}>No items found in this contest.</div>;
+  if (!cur) return <div style={{padding:40,textAlign:"center",color:"var(--text3)"}}>{contest.shuffle&&assignErr?`Your tasks could not be assigned (${assignErr}). Please tell your admin.`:"No items found in this contest."}</div>;
 
   const di=cur.domain_items; const did=di?.domain_id; const af=fields[did]||[];
   // Smart split: handles field names containing commas e.g. "Cleaning, Care & Maintenance"
