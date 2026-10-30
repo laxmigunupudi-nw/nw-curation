@@ -190,6 +190,51 @@ function scoreF(uv, gv, ct, st=0.7) {
   return 0;
 }
 
+// ── SHUFFLE: per-user task assignment (only used when contests.shuffle = true) ──
+async function fetchAllRows(build) {
+  const out=[]; const PAGE=1000;
+  for (let from=0;;from+=PAGE) {
+    const {data,error}=await build().range(from,from+PAGE-1);
+    if (error) throw new Error(error.message);
+    out.push(...(data||[]));
+    if (!data||data.length<PAGE) break;
+  }
+  return out;
+}
+// Least-used items first, random tie-break; result is in random order. Never repeats an item.
+function pickBalanced(poolIds, n, usage) {
+  const keyed=poolIds.map(id=>({id,r:Math.random()}))
+    .sort((a,b)=>((usage[a.id]||0)-(usage[b.id]||0))||(a.r-b.r))
+    .slice(0,n).map(x=>x.id);
+  for (let i=keyed.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[keyed[i],keyed[j]]=[keyed[j],keyed[i]];}
+  return keyed;
+}
+// Gives each listed user their own set of items (skips users who already have one).
+async function assignShuffledItems(contestId, userIds) {
+  const [ci,{data:cds},existing]=await Promise.all([
+    fetchAllRows(()=>sb.from("contest_items").select("id, domain_items(domain_id)").eq("contest_id",contestId).order("id")),
+    sb.from("contest_domains").select("domain_id,task_count").eq("contest_id",contestId),
+    fetchAllRows(()=>sb.from("contest_user_items").select("id,user_id,contest_item_id").eq("contest_id",contestId).order("id")),
+  ]);
+  const poolByDomain={};
+  ci.forEach(r=>{const d=r.domain_items?.domain_id; if(!d) return; (poolByDomain[d]=poolByDomain[d]||[]).push(r.id);});
+  const usage={}; const have=new Set();
+  existing.forEach(r=>{usage[r.contest_item_id]=(usage[r.contest_item_id]||0)+1; have.add(r.user_id);});
+  for (const uid of userIds) {
+    if (!uid||have.has(uid)) continue;
+    const rows=[]; let ord=1;
+    for (const cd of (cds||[])) {
+      const pool=poolByDomain[cd.domain_id]||[];
+      pickBalanced(pool, Math.min(parseInt(cd.task_count||0),pool.length), usage).forEach(id=>{
+        usage[id]=(usage[id]||0)+1;
+        rows.push({contest_id:contestId,user_id:uid,contest_item_id:id,item_order:ord++});
+      });
+    }
+    // One atomic insert per user. If a parallel tab already assigned this user, the unique keys reject this one.
+    if (rows.length) { const {error}=await sb.from("contest_user_items").insert(rows); if (error) console.warn("shuffle assign skipped:",error.message); }
+  }
+}
+
 function fmt(d) {
   if (!d) return "—";
   return new Date(d).toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"});
@@ -803,6 +848,16 @@ function AdminContests({ showToast }) {
         sb.from("contest_users").select("user_id").eq("contest_id",c.id),
       ]);
       const taskRows = [];
+      if (c.shuffle) {
+        // Shuffle contest: each user gets tasks only for their own assigned items
+        const uids=(cuUsers||[]).map(u=>u.user_id).filter(Boolean);
+        try { await assignShuffledItems(c.id, uids); } catch(e) { showToast("Shuffle assignment failed: "+e.message,"error"); return; }
+        const ua=await fetchAllRows(()=>sb.from("contest_user_items").select("id,user_id,contest_item_id").eq("contest_id",c.id).order("id"));
+        ua.forEach(r=>taskRows.push({
+          contest_id: c.id, user_id: r.user_id, contest_item_id: r.contest_item_id,
+          status: "not_started", started_at: new Date().toISOString(),
+        }));
+      } else
       for (const u of (cuUsers||[])) {
         for (const item of (ciItems||[])) {
           taskRows.push({
@@ -889,7 +944,7 @@ function AdminContests({ showToast }) {
               {contests.length===0&&<tr><td colSpan={7} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No contests yet.</td></tr>}
               {contests.map(c=>(
                 <tr key={c.id}>
-                  <td className="fw5">{c.name}</td>
+                  <td className="fw5">{c.name}{c.shuffle&&<span className="badge b-blue" style={{marginLeft:6}}>Shuffle</span>}</td>
                   <td><span className={`badge b-${c.mode==="practice"?"purple":"blue"}`}>{c.mode}</span></td>
                   <td className="xs">{c.contest_domains?.map(cd=>cd.domains?.name).filter(Boolean).join(", ")||"—"}</td>
                   <td>{c.task_count}</td>
@@ -925,6 +980,7 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
   const [allocs,setAllocs]=useState([{did:"",tc:10}]);
   const [selU,setSelU]=useState([]); const [csvU,setCsvU]=useState(""); const [amode,setAmode]=useState("sel");
   const [saving,setSaving]=useState(false); const [err,setErr]=useState("");
+  const [shuffle,setShuffle]=useState(false);
   const fRef=useRef();
 
   async function doCreate(e) {
@@ -935,7 +991,18 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
     if (!name.trim()) { setErr("Contest name is required"); return; }
     setSaving(true);
     try {
+      if (shuffle) {
+        // Each user needs this many distinct items from each domain, so the domain must have at least that many
+        for (const a of allocs) {
+          const {count}=await sb.from("domain_items").select("id",{count:"exact",head:true}).eq("domain_id",a.did);
+          if ((count||0)<parseInt(a.tc)) {
+            const dn=domains.find(d=>d.id===a.did)?.name||"domain";
+            setErr(`Shuffle needs at least ${a.tc} items in "${dn}" (it has ${count||0})`); setSaving(false); return;
+          }
+        }
+      }
       const {data:con,error:ce} = await sb.from("contests").insert({
+        ...(shuffle?{shuffle:true}:{}),
         name:name.trim(),mode,task_count:parseInt(tc),
         start_at:sa||null,end_at:ea||null,
         l0_threshold:l0,l1_threshold:l1,l2_threshold:l2,
@@ -950,6 +1017,12 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
         const {data:ditems} = await sb.from("domain_items").select("id").eq("domain_id",a.did);
         if (!ditems||!ditems.length) continue;
         const n = parseInt(a.tc);
+        if (shuffle) {
+          // Shuffle contest: contest_items holds the WHOLE pool; each user's set is dealt later (activation / first open)
+          await sb.from("contest_items").insert(ditems.map((it,i)=>({contest_id:con.id,domain_item_id:it.id,item_order:off+i+1})));
+          off+=ditems.length;
+          continue;
+        }
         const shuffled = [...ditems].sort(()=>Math.random()-.5).slice(0,n);
         await sb.from("contest_items").insert(shuffled.map((it,i)=>({contest_id:con.id,domain_item_id:it.id,item_order:off+i+1})));
         off+=n;
@@ -991,6 +1064,18 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
             <div className="fg"><label className="fl">Total tasks *</label><input type="number" min={1} max={200} value={tc} onChange={e=>setTc(e.target.value)} required/></div>
             <div className="fg"><label className="fl">Start time (optional)</label><input type="datetime-local" value={sa} onChange={e=>setSa(e.target.value)}/></div>
             <div className="fg"><label className="fl">End time (optional)</label><input type="datetime-local" value={ea} onChange={e=>setEa(e.target.value)}/></div>
+          </div>
+
+          <div style={{marginBottom:16}}>
+            <label className="fx ac g3" style={{cursor:"pointer"}}>
+              <input type="checkbox" checked={shuffle} onChange={e=>setShuffle(e.target.checked)} style={{width:"auto"}}/>
+              <span className="fw6">Shuffle — give each user a different random set of tasks</span>
+            </label>
+            <div className="xs m3" style={{marginTop:4}}>
+              {shuffle
+                ? "Total tasks = tasks per user. Each domain's items are dealt out so users get different sets (items only repeat across users once a domain runs out). Each user sees their tasks in a random order."
+                : "Off: every user gets the same tasks, picked at random once when the contest is created."}
+            </div>
           </div>
 
           <div style={{marginBottom:16}}>
@@ -1663,13 +1748,30 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     return ()=>sb.removeChannel(sub);
   },[]);
 
+  // This user's own items (shuffle contests only)
+  async function fetchMyItems() {
+    const {data:ua}=await sb.from("contest_user_items")
+      .select("item_order, contest_items(*, domain_items(*))")
+      .eq("contest_id",contest.id).eq("user_id",user.id).order("item_order");
+    return (ua||[]).filter(r=>r.contest_items).map(r=>({...r.contest_items,item_order:r.item_order}));
+  }
+
   async function loadC() {
     try { await sb.rpc("close_expired_contests"); } catch(e) {}
     // Fix 6: Simpler query — no deep nesting
-    const {data:ci} = await sb.from("contest_items")
-      .select("*, domain_items(*)")
-      .eq("contest_id",contest.id)
-      .order("item_order");
+    let ci;
+    if (contest.shuffle) {
+      ci = await fetchMyItems();
+      if (!ci.length) { // first open (or user added after activation): deal this user their own set now
+        try { await assignShuffledItems(contest.id,[user.id]); } catch(e) { console.warn(e); }
+        ci = await fetchMyItems();
+      }
+    } else {
+      ({data:ci} = await sb.from("contest_items")
+        .select("*, domain_items(*)")
+        .eq("contest_id",contest.id)
+        .order("item_order"));
+    }
     // Attach domain name separately
     const domainIds = [...new Set((ci||[]).map(i=>i.domain_items?.domain_id).filter(Boolean))];
     const {data:doms} = await sb.from("domains").select("id,name").in("id",domainIds);
@@ -1935,9 +2037,9 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       }
 
       // Step 3: Fetch latest task state from DB
-      const {data:latestItems} = await sb.from("contest_items")
-        .select("*, domain_items(*)")
-        .eq("contest_id",contest.id).order("item_order");
+      const latestItems = contest.shuffle
+        ? await fetchMyItems()
+        : (await sb.from("contest_items").select("*, domain_items(*)").eq("contest_id",contest.id).order("item_order")).data;
       const {data:latestTasks} = await sb.from("tasks").select("id,contest_item_id,status")
         .eq("contest_id",contest.id).eq("user_id",user.id);
       const tm={};
