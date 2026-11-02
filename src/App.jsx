@@ -1104,7 +1104,8 @@ function AdminContests({ showToast }) {
     const [{data:c},{data:d},{data:u}] = await Promise.all([
       sb.from("contests").select("*, contest_domains(domain_id,task_count,domains(name)), contest_users(count)").order("created_at",{ascending:false}),
       sb.from("domains").select("id,name"),
-      sb.from("users").select("id,email,full_name").eq("role","participant").eq("status","active").limit(5000),
+      // every active account (admins too), so you can add yourself; role is shown as a tag in the pickers
+      sb.from("users").select("id,email,full_name,role").eq("status","active").limit(5000),
     ]);
     setContests(c||[]); setDomains(d||[]); setUsers(u||[]); setLoad(false);
   }
@@ -1404,7 +1405,7 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
                 {visU.map(u=>(
                   <label key={u.id} className="fx g3 ac" style={{padding:"6px 8px",cursor:"pointer",borderRadius:6}}>
                     <input type="checkbox" checked={selU.includes(u.id||u.email)} onChange={ev=>setSelU(p=>ev.target.checked?[...p,u.id||u.email]:p.filter(id=>id!==(u.id||u.email)))}/>
-                    <span className="sm">{u.full_name||u.email}</span>
+                    <span className="sm">{u.full_name||u.email}{u.role&&u.role!=="participant"&&<span className="badge b-purple" style={{marginLeft:6}}>{u.role}</span>}</span>
                     <span className="xs m3" style={{marginLeft:"auto"}}>{u.full_name?u.email:""}{!u.id&&<span style={{color:"var(--amber)",marginLeft:4}}> (not yet signed in)</span>}</span>
                   </label>
                 ))}
@@ -1478,7 +1479,7 @@ function AssignModal({ contest, users, onClose, onSaved }) {
             {visU.map(u=>(
               <label key={u.id||u.email} className="fx g3 ac" style={{padding:"7px 8px",cursor:"pointer",borderRadius:6}}>
                 <input type="checkbox" checked={sel.includes(u.id||u.email)} onChange={ev=>setSel(p=>ev.target.checked?[...p,u.id||u.email]:p.filter(id=>id!==(u.id||u.email)))}/>
-                <span className="sm">{u.full_name||u.email}</span>
+                <span className="sm">{u.full_name||u.email}{u.role&&u.role!=="participant"&&<span className="badge b-purple" style={{marginLeft:6}}>{u.role}</span>}</span>
                 <span className="xs m3" style={{marginLeft:"auto"}}>
                   {u.full_name?u.email:""}
                   {!u.id&&<span style={{color:"var(--amber)",fontSize:11,marginLeft:4}}> (not yet signed in)</span>}
