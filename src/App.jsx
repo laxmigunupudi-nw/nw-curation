@@ -1099,6 +1099,7 @@ function AdminContests({ showToast }) {
   const [load,setLoad] = useState(true);
   const [showCreate,setShowCreate] = useState(false);
   const [showAssign,setShowAssign] = useState(null);
+  const [showClone,setShowClone] = useState(null);   // null = closed, {source} = open (source may be null)
   const [curUser,setCurUser] = useState(null);
 
   useEffect(()=>{ sb.auth.getUser().then(({data})=>setCurUser(data?.user)); load2(); },[]);
@@ -1215,7 +1216,10 @@ function AdminContests({ showToast }) {
     <div>
       <div className="fx ac jb" style={{marginBottom:20}}>
         <div><div className="pt">Contests</div><div className="ps">{contests.length} total</div></div>
-        <button className="bp" onClick={()=>setShowCreate(true)}>+ Create contest</button>
+        <div className="fx g2">
+          <button className="bg" onClick={()=>setShowClone({source:null})}>Clone contest</button>
+          <button className="bp" onClick={()=>setShowCreate(true)}>+ Create contest</button>
+        </div>
       </div>
       <div className="card" style={{padding:0,overflow:"hidden"}}>
         {load ? <div style={{padding:36,textAlign:"center"}}><span className="sp"/></div> : (
@@ -1234,6 +1238,7 @@ function AdminContests({ showToast }) {
                   <td>
                     <div className="fx g2">
                       <button className="bg bxs" onClick={()=>setShowAssign(c)}>Users</button>
+                      <button className="bg bxs" onClick={()=>setShowClone({source:c})}>Clone</button>
                       <button className="bg bxs" onClick={()=>toggleStatus(c)}>
                         {c.status==="active"?"Close":c.status==="draft"?"Activate":"Reopen"}
                       </button>
@@ -1247,7 +1252,127 @@ function AdminContests({ showToast }) {
         )}
       </div>
       {showCreate&&<CreateContestModal domains={domains} users={users} uid={curUser?.id} onClose={()=>setShowCreate(false)} onDone={()=>{setShowCreate(false);load2();showToast("Contest created!");}}/>}
+      {showClone&&<CloneContestModal key={showClone.source?.id||"new"} contests={contests} source={showClone.source} uid={curUser?.id} onClose={()=>setShowClone(null)} onDone={(nm,n)=>{setShowClone(null);load2();showToast(`✓ Cloned as "${nm}" (draft, ${n} tasks). Add users, then activate.`);}}/>}
       {showAssign&&<AssignModal contest={showAssign} users={users} onClose={()=>setShowAssign(null)} onSaved={()=>{setShowAssign(null);load2();showToast("Users updated");}}/>}
+    </div>
+  );
+}
+
+// ── CLONE CONTEST ────────────────────────────────────────────
+// Copies a contest's settings, domains and tasks into a new DRAFT contest. Users, progress and results are never copied.
+const toInputDT=v=>v?String(v).replace(" ","T").slice(0,16):"";   // stored timestamp -> datetime-local text (same convention as Create)
+const isPast=v=>!!v&&new Date(v)<=new Date();
+function pickRandom(arr,n){ const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a.slice(0,n); }
+
+function CloneContestModal({ contests, source, uid, onClose, onDone }) {
+  const [srcId,setSrcId]=useState(source?.id||"");
+  const src=contests.find(c=>c.id===srcId)||null;
+  const [name,setName]=useState(""); const [nameTouched,setNameTouched]=useState(false);
+  const [sa,setSa]=useState(""); const [ea,setEa]=useState(""); const [fresh,setFresh]=useState(false);
+  const [saving,setSaving]=useState(false); const [err,setErr]=useState("");
+
+  useEffect(()=>{ // pre-fill from the chosen contest; dates that have already passed are not carried over
+    if (!src) return;
+    if (!nameTouched) setName(`${src.name} (copy)`);
+    setSa(isPast(src.start_at)?"":toInputDT(src.start_at)); setEa(isPast(src.end_at)?"":toInputDT(src.end_at));
+    setFresh(false);
+  },[srcId]);
+
+  async function doClone(e) {
+    e.preventDefault(); setErr("");
+    if (!src) { setErr("Choose a contest to clone"); return; }
+    const nm=name.trim(); if (!nm) { setErr("Enter a name for the new contest"); return; }
+    setSaving(true); let newId=null;
+    try {
+      const {data:o,error:se}=await sb.from("contests").select("*, contest_domains(domain_id,task_count)").eq("id",src.id).single();
+      if (se||!o) throw new Error(se?.message||"Could not read the contest to clone");
+      const {data:con,error:ce}=await sb.from("contests").insert({
+        ...(o.shuffle?{shuffle:true}:{}),
+        name:nm,mode:o.mode,task_count:o.task_count,
+        start_at:sa||null,end_at:ea||null,
+        l0_threshold:o.l0_threshold,l1_threshold:o.l1_threshold,l2_threshold:o.l2_threshold,
+        semantic_correct_threshold:o.semantic_correct_threshold,
+        status:"draft",created_by:uid,
+      }).select().single();
+      if (ce) throw new Error(/contests_name_key|duplicate/i.test(ce.message)?`A contest named "${nm}" already exists.`:ce.message);
+      newId=con.id;
+      const allocs=o.contest_domains||[];
+      if (allocs.length) {
+        const {error}=await sb.from("contest_domains").insert(allocs.map(a=>({contest_id:newId,domain_id:a.domain_id,task_count:a.task_count})));
+        if (error) throw new Error("Copying domains failed: "+error.message);
+      }
+      let rows=[];
+      if (fresh&&!o.shuffle) {                       // a new random pick from the same domains
+        let off=0;
+        for (const a of allocs) {
+          const items=await fetchAllRows(()=>sb.from("domain_items").select("id").eq("domain_id",a.domain_id).order("id"));
+          const n=parseInt(a.task_count||0);
+          if (items.length<n) throw new Error(`A domain has only ${items.length} items but ${n} are needed.`);
+          pickRandom(items,n).forEach((it,i)=>rows.push({contest_id:newId,domain_item_id:it.id,item_order:off+i+1})); off+=n;
+        }
+      } else {                                        // the same tasks, in the same order
+        const items=await fetchAllRows(()=>sb.from("contest_items").select("domain_item_id,item_order").eq("contest_id",src.id).order("item_order").order("id"));
+        rows=items.map(it=>({contest_id:newId,domain_item_id:it.domain_item_id,item_order:it.item_order}));
+      }
+      if (!rows.length) throw new Error("The contest to clone has no tasks, so there is nothing to copy.");
+      for (let i=0;i<rows.length;i+=500) {
+        const {error}=await sb.from("contest_items").insert(rows.slice(i,i+500));
+        if (error) throw new Error("Copying tasks failed: "+error.message);
+      }
+      onDone(nm,rows.length);
+    } catch(ex) {
+      if (newId) {                                    // never leave a half-made copy behind
+        await sb.from("contest_items").delete().eq("contest_id",newId);
+        await sb.from("contest_domains").delete().eq("contest_id",newId);
+        await sb.from("contests").delete().eq("id",newId);
+      }
+      setErr(ex.message);
+    }
+    setSaving(false);
+  }
+
+  const droppedDates=!!src&&(isPast(src.start_at)||isPast(src.end_at));
+  return (
+    <div className="mo" onClick={()=>!saving&&onClose()}>
+      <div className="md" onClick={e=>e.stopPropagation()}>
+        <div style={{fontSize:18,fontWeight:700,marginBottom:16}}>Clone contest</div>
+        <form onSubmit={doClone}>
+          <div className="fg"><label className="fl">Contest to clone *</label>
+            <select value={srcId} onChange={e=>setSrcId(e.target.value)} required>
+              <option value="">Select a contest…</option>
+              {contests.map(c=><option key={c.id} value={c.id}>[{c.mode}] {c.name} — {c.status}</option>)}
+            </select>
+          </div>
+          <div className="fg"><label className="fl">New contest name *</label>
+            <input value={name} onChange={e=>{setName(e.target.value);setNameTouched(true);}} placeholder="e.g. STC_Assessment_Batch3" required/>
+          </div>
+          {src&&(
+            <div style={{background:"var(--bg3)",borderRadius:"var(--r)",padding:12,marginBottom:14,border:"1px solid var(--border)"}} className="xs">
+              <div className="sm fw6" style={{marginBottom:6}}>What will be copied</div>
+              <div>{src.mode} · {src.task_count} tasks per user{src.shuffle?" · shuffle on":""}</div>
+              <div>Levels: L1 ≥ {src.l0_threshold}%, L2 ≥ {src.l1_threshold}%, L3 ≥ {src.l2_threshold}% · semantic cutoff {src.semantic_correct_threshold}</div>
+              <div>Domains: {(src.contest_domains||[]).map(cd=>`${cd.domains?.name||"domain"} (${cd.task_count})`).join(", ")||"none"}</div>
+              <div className="m3" style={{marginTop:6}}>Not copied: users, progress, results. The copy starts as a draft.</div>
+            </div>
+          )}
+          <div className="row2">
+            <div className="fg"><label className="fl">Start time (optional)</label><input type="datetime-local" value={sa} onChange={e=>setSa(e.target.value)}/></div>
+            <div className="fg"><label className="fl">End time (optional)</label><input type="datetime-local" value={ea} onChange={e=>setEa(e.target.value)}/></div>
+          </div>
+          {droppedDates&&<div className="xs" style={{color:"var(--amber)",marginTop:-6,marginBottom:10}}>Dates that have already passed were not copied.</div>}
+          {src&&!src.shuffle&&(
+            <label className="fx g3 ac" style={{cursor:"pointer",marginBottom:6}}>
+              <input type="checkbox" checked={fresh} onChange={e=>setFresh(e.target.checked)} style={{width:"auto"}}/>
+              <span className="sm">Pick a new random set of tasks instead of the same ones</span>
+            </label>
+          )}
+          {err&&<div className="al al-e" style={{fontSize:12,marginTop:8}}>{err}</div>}
+          <div className="fx g3 jb" style={{marginTop:20}}>
+            <button type="button" className="bg" onClick={onClose} disabled={saving}>Cancel</button>
+            <button type="submit" className="bp" disabled={saving}>{saving?<><span className="sp"/> &nbsp;Cloning...</>:"Clone contest"}</button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
