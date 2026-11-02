@@ -192,12 +192,14 @@ function scoreF(uv, gv, ct, st=0.7) {
 
 // ── SHUFFLE: per-user task assignment (only used when contests.shuffle = true) ──
 async function fetchAllRows(build) {
+  // Supabase returns at most ~1000 rows per request whatever limit() says, so read page by page
+  // until a page comes back empty (this also works if the server cap is lower than the page size).
   const out=[]; const PAGE=1000;
-  for (let from=0;;from+=PAGE) {
+  for (let from=0,guard=0; guard<500; guard++) {
     const {data,error}=await build().range(from,from+PAGE-1);
     if (error) throw new Error(error.message);
-    out.push(...(data||[]));
-    if (!data||data.length<PAGE) break;
+    if (!data||!data.length) break;
+    out.push(...data); from+=data.length;
   }
   return out;
 }
@@ -386,8 +388,10 @@ function AdminUsers({ showToast }) {
 
   async function load2() {
     setLoad(true);
-    const {data} = await sb.from("users").select("*").eq("role","participant").order("created_at",{ascending:false}).limit(5000);
-    setUsers(data||[]); setLoad(false);
+    try {
+      setUsers(await fetchAllRows(()=>sb.from("users").select("*").eq("role","participant").order("created_at",{ascending:false}).order("id")));
+    } catch(ex) { showToast("Could not load users: "+ex.message,"error"); }
+    setLoad(false);
   }
   useEffect(()=>{load2();},[]);
 
@@ -1101,13 +1105,16 @@ function AdminContests({ showToast }) {
 
   async function load2() {
     setLoad(true);
-    const [{data:c},{data:d},{data:u}] = await Promise.all([
-      sb.from("contests").select("*, contest_domains(domain_id,task_count,domains(name)), contest_users(count)").order("created_at",{ascending:false}),
-      sb.from("domains").select("id,name"),
-      // every active account (admins too), so you can add yourself; role is shown as a tag in the pickers
-      sb.from("users").select("id,email,full_name,role").eq("status","active").limit(5000),
-    ]);
-    setContests(c||[]); setDomains(d||[]); setUsers(u||[]); setLoad(false);
+    try {
+      const [{data:c},{data:d},u] = await Promise.all([
+        sb.from("contests").select("*, contest_domains(domain_id,task_count,domains(name)), contest_users(count)").order("created_at",{ascending:false}),
+        sb.from("domains").select("id,name"),
+        // every active account (admins too), all pages; role is shown as a tag in the pickers
+        fetchAllRows(()=>sb.from("users").select("id,email,full_name,role").eq("status","active").order("full_name").order("id")),
+      ]);
+      setContests(c||[]); setDomains(d||[]); setUsers(u||[]);
+    } catch(ex) { showToast("Could not load contests: "+ex.message,"error"); }
+    setLoad(false);
   }
 
   async function toggleStatus(c) {
