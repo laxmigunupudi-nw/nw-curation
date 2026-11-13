@@ -690,8 +690,9 @@ function diffGolden(existing, parsed) {
     }
     updates.push({id:ex.id,item_key:p.item_key,json_value:p.json_value,attributes_for_category:p.attributes_for_category});
   }
+  const missingItems=existing.filter(it=>!seen.has(it.item_key)).map(it=>({id:it.id,item_key:it.item_key}));
   return {updates,inserts,unchanged,cells,emptied,filled,fieldChanges,samples,
-          missing:existing.filter(it=>!seen.has(it.item_key)).length};
+          missing:missingItems.length,missingItems};
 }
 
 // Rows and column order for the golden export: config order first, then any other stored columns.
@@ -741,6 +742,17 @@ async function contestsUsingDomain(domainId) {
   return (data||[]).map(r=>r.contests).filter(Boolean);
 }
 
+// Contests (any status) that use these domain items. An item a contest has been dealt must never be deleted.
+async function itemsInUse(ids) {
+  const used=new Map();
+  for (let i=0;i<ids.length;i+=100) {
+    const rows=await fetchAllRows(()=>sb.from("contest_items").select("id,domain_item_id,contests(name,status)").in("domain_item_id",ids.slice(i,i+100)).order("id"));
+    rows.forEach(r=>{ const a=used.get(r.domain_item_id)||[]; if (r.contests) a.push(r.contests); used.set(r.domain_item_id,a); });
+  }
+  return used;
+}
+const keyList=(items,n=8)=>items.slice(0,n).map(m=>m.item_key).join(", ")+(items.length>n?"…":"");
+
 function RenameDomainModal({ domain, onClose, onDone, showToast }) {
   const [nm,setNm]=useState(domain.name); const [saving,setSaving]=useState(false); const [err,setErr]=useState("");
   async function save(e) {
@@ -779,6 +791,7 @@ function UpdateGoldenModal({ domain, onClose, onDone, showToast }) {
   const [ready,setReady]=useState(false); const [blocked,setBlocked]=useState(""); const [others,setOthers]=useState([]);
   const [fieldNames,setFieldNames]=useState([]); const [plan,setPlan]=useState(null);
   const [busy,setBusy]=useState(false); const [err,setErr]=useState(""); const [prog,setProg]=useState("");
+  const [removeMissing,setRemoveMissing]=useState(false);
 
   useEffect(()=>{ (async()=>{
     try {
@@ -801,16 +814,29 @@ function UpdateGoldenModal({ domain, onClose, onDone, showToast }) {
       if (missing.length) throw new Error(`The file is missing ${missing.length} column(s) this domain uses: ${missing.slice(0,8).join(", ")}${missing.length>8?"…":""}. Export the golden data and edit that file.`);
       const extra=headers.filter(h=>!fieldNames.includes(h)&&h!=="All Attributes for Category");
       const existing=await fetchAllRows(()=>sb.from("domain_items").select("id,item_key,category,json_value,attributes_for_category").eq("domain_id",domain.id).order("id"));
-      setPlan({...diffGolden(existing,buildItemsFromRows(gRows)),extra,rows:gRows.length,existing:existing.length,fileName:file.name});
+      const d=diffGolden(existing,buildItemsFromRows(gRows));
+      let blockers=[];
+      if (d.missingItems.length) {
+        const used=await itemsInUse(d.missingItems.map(m=>m.id));
+        blockers=d.missingItems.filter(m=>(used.get(m.id)||[]).length).map(m=>({item_key:m.item_key,contests:[...new Set((used.get(m.id)||[]).map(c=>`${c.name} · ${c.status}`))]}));
+      }
+      setPlan({...d,blockers,extra,rows:gRows.length,existing:existing.length,fileName:file.name});
+      setRemoveMissing(d.missingItems.length>0&&blockers.length===0);   // on by default only when removal is safe
     } catch(ex) { setErr(ex.message); }
     setBusy(false);
   }
 
   async function apply() {
+    const removing=removeMissing&&plan.missingItems.length>0&&plan.blockers.length===0;
+    if (removing&&!confirm(`Remove ${plan.missingItems.length} item(s) (${keyList(plan.missingItems,5)}) from "${domain.name}"? This cannot be undone.`)) return;
     setBusy(true); setErr("");
     try {
       const act=activeNames(await contestsUsingDomain(domain.id));   // a contest may have been activated since this window opened
       if (act.length) throw new Error(lockMsg(act));
+      if (removing) {                                                  // checked again before anything is written, so a refusal changes nothing
+        const used=await itemsInUse(plan.missingItems.map(m=>m.id)); const still=plan.missingItems.filter(m=>(used.get(m.id)||[]).length);
+        if (still.length) throw new Error(`Nothing was changed. ${still.length} item(s) to remove are now used by a contest (${keyList(still,5)}).`);
+      }
       const ups=plan.updates; let done=0;
       for (let i=0;i<ups.length;i+=8) {
         const chunk=ups.slice(i,i+8);
@@ -824,13 +850,23 @@ function UpdateGoldenModal({ domain, onClose, onDone, showToast }) {
         const {error}=await sb.from("domain_items").insert(plan.inserts.slice(i,i+50).map(x=>({domain_id:domain.id,...x})));
         if (error) throw new Error(`Existing items were updated, but adding new items failed: ${error.message}`);
       }
-      showToast(`✓ Golden data updated — ${ups.length} item(s) changed, ${plan.inserts.length} added`);
+      if (removing) {
+        const ids=plan.missingItems.map(m=>m.id);
+        for (let i=0;i<ids.length;i+=50) {
+          const chunk=ids.slice(i,i+50);
+          const {data,error}=await sb.from("domain_items").delete().in("id",chunk).select("id");
+          if (error||(data?.length||0)!==chunk.length) throw new Error(`Items were updated, but removing the extra items failed: ${error?.message||"not all of them were deleted (no permission?)"}. Upload the same file again to finish.`);
+        }
+      }
+      showToast(`✓ Golden data updated — ${ups.length} item(s) changed, ${plan.inserts.length} added${removing?`, ${plan.missingItems.length} removed`:""}`);
       onDone();
     } catch(ex) { setErr(ex.message); setProg(""); }
     setBusy(false);
   }
 
-  const nothing=plan&&!plan.updates.length&&!plan.inserts.length;
+  const removable=!!plan&&removeMissing&&plan.missingItems.length>0&&plan.blockers.length===0;
+  const nothing=plan&&!plan.updates.length&&!plan.inserts.length&&!removable;
+  const nChanges=plan?plan.updates.length+plan.inserts.length:0;
   const fc=plan?Object.entries(plan.fieldChanges).sort((a,b)=>b[1]-a[1]):[];
   return (
     <div className="mo" onClick={()=>!busy&&onClose()}>
@@ -840,17 +876,17 @@ function UpdateGoldenModal({ domain, onClose, onDone, showToast }) {
         {!ready ? <div style={{padding:24,textAlign:"center"}}><span className="sp"/></div> : blocked ? (
           <div className="al al-e" style={{fontSize:13}}>🔒 Golden data is locked. {blocked}</div>
         ) : (<>
-          <div className="xs m3" style={{marginBottom:10}}>Rows are matched to items by order (row 1 is item-1), so keep the order from the export. Items are never deleted here.</div>
+          <div className="xs m3" style={{marginBottom:10}}>Rows are matched to items by order (row 1 is item-1), so keep the order from the export. Items that are in the domain but not in the file can be removed, if no contest uses them.</div>
           <input type="file" accept=".xlsx,.xls" disabled={busy} onChange={e=>onFile(e.target.files[0])}/>
           {busy&&!plan&&<div className="xs m3" style={{marginTop:8}}><span className="sp"/> &nbsp;Reading file…</div>}
           {plan&&(
             <div style={{marginTop:14}}>
               <div className="sm" style={{marginBottom:8}}><b>{plan.fileName}</b>: {plan.rows} rows, domain has {plan.existing} items</div>
-              {nothing ? <div className="al al-i" style={{fontSize:12}}>The file matches the current golden data. Nothing to update.</div> : (<>
+              {nothing ? <div className="al al-i" style={{fontSize:12}}>The file matches the current golden data for its rows. Nothing to update.</div> : (<>
                 <div className="sm" style={{lineHeight:1.7}}>
                   <div>• <b>{plan.updates.length}</b> item(s) will change ({plan.cells} cell(s))</div>
                   <div>• <b>{plan.inserts.length}</b> new item(s) will be added</div>
-                  <div>• {plan.unchanged} item(s) unchanged{plan.missing>0?`, ${plan.missing} existing item(s) are not in the file and stay as they are`:""}</div>
+                  <div>• {plan.unchanged} item(s) unchanged</div>
                 </div>
                 {fc.length>0&&<div className="xs m3" style={{marginTop:8}}>Changed cells by field: {fc.slice(0,8).map(([k,n])=>`${k} (${n})`).join(", ")}{fc.length>8?"…":""}</div>}
                 {plan.samples.length>0&&(
@@ -862,6 +898,14 @@ function UpdateGoldenModal({ domain, onClose, onDone, showToast }) {
                 {plan.filled>0&&<div className="xs" style={{marginTop:6,color:"var(--amber)"}}>⚠ {plan.filled} cell(s) go from empty to filled. Those fields start to show for that item.</div>}
                 {others.length>0&&<div className="xs" style={{marginTop:6,color:"var(--amber)"}}>⚠ {others.length} other contest(s) use this domain ({others.map(c=>`${c.name} · ${c.status}`).join(", ")}). Stored scores don't change, but the number of scored fields per item comes from the current golden data, so filling or emptying cells can shift their percentages.</div>}
               </>)}
+              {plan.missingItems.length>0&&(plan.blockers.length>0 ? (
+                <div className="xs" style={{marginTop:10,color:"var(--amber)"}}>🔒 {plan.missingItems.length} item(s) are in the domain but not in the file ({keyList(plan.missingItems)}). They can't be removed because contests use them: {plan.blockers.slice(0,4).map(b=>`${b.item_key} (${b.contests.join(", ")})`).join("; ")}{plan.blockers.length>4?"…":""}. All of them stay as they are.</div>
+              ) : (
+                <label className="fx g3 ac" style={{cursor:"pointer",marginTop:10}}>
+                  <input type="checkbox" checked={removeMissing} onChange={e=>setRemoveMissing(e.target.checked)} style={{width:"auto"}}/>
+                  <span className="sm"><b>Also remove {plan.missingItems.length} item(s) that are not in the file</b> ({keyList(plan.missingItems)}). No contest uses them. This cannot be undone.</span>
+                </label>
+              ))}
               {plan.extra.length>0&&<div className="xs m3" style={{marginTop:8}}>{plan.extra.length} column(s) in the file aren't in this domain's config and will be stored but unused: {plan.extra.slice(0,5).join(", ")}{plan.extra.length>5?"…":""}</div>}
             </div>
           )}
@@ -870,7 +914,7 @@ function UpdateGoldenModal({ domain, onClose, onDone, showToast }) {
         {err&&<div className="al al-e" style={{fontSize:12,marginTop:10}}>{err}</div>}
         <div className="fx g3 jb" style={{marginTop:20}}>
           <button className="bg" onClick={onClose} disabled={busy}>{blocked?"Close":"Cancel"}</button>
-          {!blocked&&<button className="bp" onClick={apply} disabled={busy||!plan||nothing}>{busy&&plan?<><span className="sp"/> &nbsp;Applying...</>:plan&&!nothing?`Apply ${plan.updates.length+plan.inserts.length} change(s)`:"Apply"}</button>}
+          {!blocked&&<button className="bp" onClick={apply} disabled={busy||!plan||nothing}>{busy&&plan?<><span className="sp"/> &nbsp;Applying...</>:plan&&!nothing?(removable?(nChanges?`Apply ${nChanges} change(s) and remove ${plan.missingItems.length} item(s)`:`Remove ${plan.missingItems.length} item(s)`):`Apply ${nChanges} change(s)`):"Apply"}</button>}
         </div>
       </div>
     </div>
