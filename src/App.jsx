@@ -2223,6 +2223,15 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const creatingTask = useRef({});
 
   useEffect(()=>{ loadC(); },[]);
+  useEffect(()=>{   // warm the browser cache with the next and previous questions' images
+    if (typeof Image==="undefined") return;
+    [idx+1,idx-1].forEach(j=>{
+      const it=items[j]; if (!it) return;
+      (fields[it.domain_items?.domain_id]||[]).filter(f=>f.field_role==="image").forEach(f=>{
+        const u=it.domain_items?.json_value?.[f.field_name]; if (u&&!isVideoUrl(u)) { const im=new Image(); im.src=u; }
+      });
+    });
+  },[idx,items,fields]);
 
   // Realtime + polling: watch for contest close
   useEffect(()=>{
@@ -3081,10 +3090,10 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               )))}
             </div>
             <div className="fx g3 jb" style={{marginTop:20}}>
-              <button className="bg bsm" disabled={idx===0} onClick={async()=>{
+              <button className="bg bsm" disabled={idx===0} onClick={()=>{
   flushTask(cur);
-  const open=await checkContestOpen();
-  if(open){setIdx(i=>i-1);setShowVal(false);}
+  setIdx(i=>i-1);setShowVal(false);   // show the other task straight away
+  checkContestOpen();                 // and check in the background that the contest is still open (it closes this view if not)
 }}>← Previous</button>
               <div className="fx g2">
                 {contest.mode==="practice"&&!isSub&&(
@@ -3094,10 +3103,10 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
                   <button className="bg bsm" onClick={()=>setShowVal(true)}>See answers</button>
                 )}
                 {idx<items.length-1&&(
-                  <button className="bg bsm" onClick={async()=>{
+                  <button className="bg bsm" onClick={()=>{
                     flushTask(cur);
-                    const open=await checkContestOpen();
-                    if(open){setIdx(i=>i+1);setShowVal(false);}
+                    setIdx(i=>i+1);setShowVal(false);   // show the next task straight away
+                    checkContestOpen();                 // and check in the background that the contest is still open
                   }}>Next →</button>
                 )}
               </div>
