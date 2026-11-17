@@ -1273,7 +1273,7 @@ function AdminContests({ showToast }) {
               {contests.length===0&&<tr><td colSpan={7} style={{textAlign:"center",color:"var(--text3)",padding:32}}>No contests yet.</td></tr>}
               {contests.map(c=>(
                 <tr key={c.id}>
-                  <td className="fw5">{c.name}{c.shuffle&&<span className="badge b-blue" style={{marginLeft:6}}>Shuffle</span>}</td>
+                  <td className="fw5">{c.name}{c.shuffle&&<span className="badge b-blue" style={{marginLeft:6}}>Shuffle</span>}{c.deferred_scoring&&<span className="badge b-blue" style={{marginLeft:6}}>Scores later</span>}</td>
                   <td><span className={`badge b-${c.mode==="practice"?"purple":"blue"}`}>{c.mode}</span></td>
                   <td className="xs">{c.contest_domains?.map(cd=>cd.domains?.name).filter(Boolean).join(", ")||"—"}</td>
                   <td>{c.task_count}</td>
@@ -1332,6 +1332,7 @@ function CloneContestModal({ contests, source, uid, onClose, onDone }) {
       if (se||!o) throw new Error(se?.message||"Could not read the contest to clone");
       const {data:con,error:ce}=await sb.from("contests").insert({
         ...(o.shuffle?{shuffle:true}:{}),
+        ...(o.deferred_scoring?{deferred_scoring:true}:{}),
         name:nm,mode:o.mode,task_count:o.task_count,
         start_at:sa||null,end_at:ea||null,
         l0_threshold:o.l0_threshold,l1_threshold:o.l1_threshold,l2_threshold:o.l2_threshold,
@@ -1393,7 +1394,7 @@ function CloneContestModal({ contests, source, uid, onClose, onDone }) {
           {src&&(
             <div style={{background:"var(--bg3)",borderRadius:"var(--r)",padding:12,marginBottom:14,border:"1px solid var(--border)"}} className="xs">
               <div className="sm fw6" style={{marginBottom:6}}>What will be copied</div>
-              <div>{src.mode} · {src.task_count} tasks per user{src.shuffle?" · shuffle on":""}</div>
+              <div>{src.mode} · {src.task_count} tasks per user{src.shuffle?" · shuffle on":""}{src.deferred_scoring?" · scores updated later":""}</div>
               <div>Levels: L1 ≥ {src.l0_threshold}%, L2 ≥ {src.l1_threshold}%, L3 ≥ {src.l2_threshold}% · semantic cutoff {src.semantic_correct_threshold}</div>
               <div>Domains: {(src.contest_domains||[]).map(cd=>`${cd.domains?.name||"domain"} (${cd.task_count})`).join(", ")||"none"}</div>
               <div className="m3" style={{marginTop:6}}>Not copied: users, progress, results. The copy starts as a draft.</div>
@@ -1432,6 +1433,7 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
   const [uq,setUq]=useState(""); const visU=users.filter(u=>matchUser(u,uq));
   const [saving,setSaving]=useState(false); const [err,setErr]=useState("");
   const [shuffle,setShuffle]=useState(false);
+  const [deferred,setDeferred]=useState(false);
   const fRef=useRef();
 
   async function doCreate(e) {
@@ -1454,6 +1456,7 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
       }
       const {data:con,error:ce} = await sb.from("contests").insert({
         ...(shuffle?{shuffle:true}:{}),
+        ...(deferred?{deferred_scoring:true}:{}),
         name:name.trim(),mode,task_count:parseInt(tc),
         start_at:sa||null,end_at:ea||null,
         l0_threshold:l0,l1_threshold:l1,l2_threshold:l2,
@@ -1526,6 +1529,18 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
               {shuffle
                 ? "Total tasks = tasks per user. Each domain's items are dealt out so users get different sets (items only repeat across users once a domain runs out). Each user sees their tasks in a random order."
                 : "Off: every user gets the same tasks, picked at random once when the contest is created."}
+            </div>
+          </div>
+
+          <div style={{marginBottom:16}}>
+            <label className="fx ac g3" style={{cursor:"pointer"}}>
+              <input type="checkbox" checked={deferred} onChange={e=>setDeferred(e.target.checked)} style={{width:"auto"}}/>
+              <span className="fw6">Scores updated later — participants see no scores</span>
+            </label>
+            <div className="xs m3" style={{marginTop:4}}>
+              {deferred
+                ? "Answers are saved when people submit, and nothing is scored or shown (not even in practice mode). Participants are told their scores will be updated within a day. You score the answers afterwards and update them in the database."
+                : "Off: answers are scored when people submit and the result is shown straight away."}
             </div>
           </div>
 
@@ -2032,7 +2047,7 @@ function UserContests({ user, onOpen }) {
                   <div className="xs m3" style={{marginTop:2}}>{c.contest_domains?.map(cd=>cd.domains?.name).filter(Boolean).join(", ")} · {c.task_count} tasks · {c.mode}</div>
                 </div>
                 <div className="fx g3 ac">
-                  {c.mode==="assessment"&&c.score ? (
+                  {c.mode==="assessment"&&c.score&&!c.deferred_scoring ? (
                     <>
                       <div style={{textAlign:"right"}}>
                         <div className="mono fw6" style={{fontSize:18}}>{c.score.accuracy_pct}%</div>
@@ -2041,7 +2056,7 @@ function UserContests({ user, onOpen }) {
                       <span className={`badge cert-${c.score.cert_level?.toLowerCase()}`} style={{fontSize:13,padding:"5px 12px"}}>{c.score.cert_level}</span>
                     </>
                   ) : (
-                    <div className="sm m2">{c.progress?.submitted||0}/{c.task_count} completed</div>
+                    <div className="sm m2">{c.progress?.submitted||0}/{c.task_count} completed{c.deferred_scoring&&(c.progress?.submitted||0)>=c.task_count?" · scores updated within a day":""}</div>
                   )}
                 </div>
               </div>
@@ -2104,8 +2119,15 @@ function UserProfile({ user, showToast }) {
 
 
 // ── CURATE FIELD — local state only, DB saves happen on navigate ─
+// Every paragraph box is the same size: 30 rows is room for a 450-word answer. It also grows with the text, so a longer
+// answer or a narrower screen never needs an inner scrollbar.
+const PARAGRAPH_ROWS=30;
+const isVideoUrl=u=>/\.(mp4|webm|mov|m4v|ogv)(\?|#|$)/i.test(String(u||""));   // video links, so an image-role field that holds a video still plays
 function CurateField({ fieldDef, initialValue, disabled, onSave }) {
+  const multiline = fieldDef.input_type==="paragraph";   // a "paragraph" field gets a large multi-line box
   const [val, setVal] = useState(initialValue||"");
+  const taRef=useRef(null);
+  useEffect(()=>{ const el=taRef.current; if (multiline&&el&&el.scrollHeight>0) { el.style.height="auto"; el.style.height=el.scrollHeight+"px"; } },[multiline,val]);
 
   useEffect(()=>{ setVal(initialValue||""); }, [initialValue]);
 
@@ -2163,6 +2185,13 @@ function CurateField({ fieldDef, initialValue, disabled, onSave }) {
         </select>
       ) : fieldDef.input_type==="numeric" ? (
         <input type="number" value={val} disabled={disabled} onChange={e=>handleChange(e.target.value)}/>
+      ) : multiline ? (
+        <>
+          <textarea ref={taRef} value={val} disabled={disabled} rows={PARAGRAPH_ROWS} style={{width:"100%",resize:"vertical",lineHeight:1.5,overflowY:"auto"}}
+            placeholder={`Write the ${fieldDef.field_name.toLowerCase()} in your own words...`}
+            onChange={e=>handleChange(e.target.value)}/>
+          <div className="xs m3" style={{marginTop:2,textAlign:"right"}}>{(val.trim()?val.trim().split(/\s+/).length:0)} words</div>
+        </>
       ) : (
         <input type="text" value={val} disabled={disabled}
           placeholder={`Enter ${fieldDef.field_name.toLowerCase()}...`}
@@ -2333,7 +2362,6 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   // Batch save all answers for a task to DB — called on navigate/submit
   // Includes: save lock, silent null detection, timeout race, 4-attempt retry
   async function flushTask(item, {silent=false}={}) {
-    if (contest.mode==="practice") return true;
     const task = tasks[item.id];
     if (!task || task.status==="submitted") return true;
 
@@ -2445,16 +2473,30 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         const sc = scoreF(val, golden, ct, contest.semantic_correct_threshold||0.7);
         rows.push({task_id:task.id, field_name:fieldName, user_value:String(val), golden_value:golden, score:sc, comparison_type:ct, is_draft:false});
       }
-      if (rows.length > 0) {
-        // Fire and don't wait — show validate immediately, save in background
-        sb.from("responses").upsert(rows, {onConflict:"task_id,field_name"});
+      // Saves the final answers and marks the task submitted. (A Supabase query only runs when it is awaited or .then() is
+      // called, so the old "fire and don't wait" lines never sent anything.) Returns an error message, or null when saved.
+      const persist=async()=>{
+        if (rows.length>0) { const {error}=await sb.from("responses").upsert(rows,{onConflict:"task_id,field_name"}); if (error) return error.message; }
+        const {error:te}=await sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
+        return te?te.message:null;
+      };
+      if (contest.deferred_scoring) {
+        // Scores come later, so the answers MUST be saved before we confirm anything
+        const err=await persist();
+        if (err) { showToast&&showToast("Could not save your answers: "+err,"error"); return; }
+        setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"submitted"}}));
+      } else {
+        // Show the validation straight away and finish the save in the background; if it fails, say so and let them retry
+        setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"submitted"}}));
+        persist().then(err=>{ if (err) {
+          showToast&&showToast("Your answers could not be saved: "+err+". Press Validate again to retry.","error");
+          setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"in_progress"}})); setShowVal(false);
+        } });
       }
-      // Mark task submitted — fire and don't wait
-      sb.from("tasks").update({status:"submitted",submitted_at:new Date().toISOString()}).eq("id",task.id);
-      setTasks(prev=>({...prev,[item.id]:{...prev[item.id],status:"submitted"}}));
     }
     // Store answers in ref before showing validate — avoids async state update issue
     practiceAnswersRef.current = answers[task?.id] || answers[item.id] || {};
+    if (contest.deferred_scoring) showToast&&showToast("✓ Answers saved. Your scores will be updated within a day.");   // the panel below shows the correct answers, never scores
     // Show validate immediately — don't wait for save
     setShowVal(true);
   }
@@ -2742,8 +2784,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       <div className="card" style={{maxWidth:500,textAlign:"center",padding:44,boxShadow:"var(--shadow2)"}}>
         <div style={{fontSize:48,marginBottom:16}}>📋</div>
         <div className="fw6" style={{fontSize:22,marginBottom:6}}>Contest has ended</div>
-        <div className="sm m2" style={{marginBottom:24}}>Your answers have been automatically saved and submitted.</div>
-        {score&&contest.mode==="assessment"&&(<>
+        <div className="sm m2" style={{marginBottom:24}}>Your answers have been automatically saved and submitted.{contest.deferred_scoring&&" Your scores will be updated within a day."}</div>
+        {score&&contest.mode==="assessment"&&!contest.deferred_scoring&&(<>
           <div className="g3c" style={{marginBottom:24}}>
             {[{v:score.tasks_submitted,l:"Tasks done"},{v:`${score.correct_attributes}/${score.total_attributes}`,l:"Correct"},{v:`${score.accuracy_pct}%`,l:"Accuracy"}].map(x=>(
               <div className="sc" key={x.l}><div className="sv">{x.v}</div><div className="sl">{x.l}</div></div>
@@ -2767,7 +2809,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         <div style={{fontSize:52,marginBottom:16}}>✓</div>
         <div style={{fontSize:24,fontWeight:700,marginBottom:8}}>Assessment submitted</div>
         <div className="sm m2" style={{marginBottom:28}}>{contest.name}</div>
-        {score ? (
+        {score&&!contest.deferred_scoring ? (
           <>
             <div className="g3c" style={{marginBottom:28}}>
               {[{v:score.tasks_submitted,l:"Tasks done"},{v:`${score.correct_attributes}/${score.total_attributes}`,l:"Correct attrs"},{v:`${score.accuracy_pct}%`,l:"Accuracy"}].map(x=>(
@@ -2782,7 +2824,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         ) : (
           <div className="sm m2" style={{marginBottom:16}}>
             ✅ Your answers have been saved successfully.<br/>
-            <span className="xs m3">Your score will be available shortly. You may close this window.</span>
+            <span className="xs m3">{contest.deferred_scoring?"Your scores will be updated within a day. You may close this window.":"Your score will be available shortly. You may close this window."}</span>
           </div>
         )}
         <button className="bg" style={{marginTop:28}} onClick={onClose}>Back to contests</button>
@@ -2823,7 +2865,9 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     : answers[task?.id]||answers[cur.id]||{};
   const isSub=task?.status==="submitted";
   const ctx=af.filter(f=>f.field_role==="context"); // always show all context fields
-  const imgs=af.filter(f=>f.field_role==="image");
+  const urlOf=f=>di?.json_value?.[f.field_name];
+  const vids=[...af.filter(f=>f.field_role==="video"),...af.filter(f=>f.field_role==="image"&&isVideoUrl(urlOf(f)))];   // role "video", or an image field whose link is a video file
+  const imgs=af.filter(f=>f.field_role==="image"&&!isVideoUrl(urlOf(f)));
   const cure=af.filter(f=>f.field_role==="curate"&&(aa.length===0||aa.includes(f.field_name))&&String(di?.json_value?.[f.field_name]??"").trim()!=="");
   // annotate: renders like curate but never scored
   const annotate=af.filter(f=>f.field_role==="annotate");
@@ -2916,6 +2960,22 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
 
         {/* Context card */}
         <div className="card" style={{marginBottom:16,padding:16}}>
+          {vids.some(f=>urlOf(f))&&(
+            <div style={{marginBottom:12}}>
+              {vids.map(f=>{
+                const url=urlOf(f);
+                return url?(
+                  <div key={f.field_name} style={{marginBottom:10}}>
+                    <video src={url} controls preload="metadata" playsInline
+                      style={{width:"100%",maxWidth:760,maxHeight:"60vh",borderRadius:8,background:"#000",display:"block"}}
+                      onError={e=>{ e.target.style.display="none"; const n=e.target.nextSibling; if (n) n.style.display="block"; }}/>
+                    <div className="xs" style={{display:"none",color:"var(--red)",marginTop:4}}>This video could not be loaded. <a href={url} target="_blank" rel="noreferrer">Open it in a new tab</a>.</div>
+                    <div className="xs m3" style={{marginTop:4}}><a href={url} target="_blank" rel="noreferrer">Open in a new tab</a></div>
+                  </div>
+                ):null;
+              })}
+            </div>
+          )}
           {imgs.length>0&&(
             <div className="fx g3 wrap" style={{marginBottom:12}}>
               {imgs.slice(0,6).map(f=>{
@@ -2943,11 +3003,21 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         {/* Validation results (practice) */}
         {showVal&&isSub&&(
           <div className="card" style={{marginBottom:16}}>
-            <div className="fw6" style={{marginBottom:12}}>Validation results</div>
+            <div className="fw6" style={{marginBottom:contest.deferred_scoring?4:12}}>{contest.deferred_scoring?"Correct answers":"Validation results"}</div>
+            {contest.deferred_scoring&&<div className="xs m3" style={{marginBottom:12}}>Compare your answers with the correct ones. Scores are not shown here — they will be updated within a day.</div>}
             {cure.map(f=>{
               const uv=ta[f.field_name]||"";
               const gv=String(di?.json_value?.[f.field_name]??"");
               if (!gv) return null; // skip fields with no golden value — not scoreable
+              if (contest.deferred_scoring) return (   // scores come later: show both answers side by side, with no score and no right/wrong colouring
+                <div key={f.field_name} style={{padding:"10px 12px",border:"1px solid var(--border)",borderRadius:8,marginBottom:10}}>
+                  <div className="xs fw6" style={{marginBottom:6}}>{f.field_name}</div>
+                  <div className="xs m3">Your answer:</div>
+                  <div className="sm" style={{whiteSpace:"pre-wrap",wordBreak:"break-word",marginBottom:8}}>{uv||"(blank)"}</div>
+                  <div className="xs m3">Correct answer:</div>
+                  <div className="sm fw5" style={{whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{gv}</div>
+                </div>
+              );
               const isMulti=f.comparison_type==="multiselect"||f.comparison_type==="list";
               const sc2=scoreF(uv,gv,f.comparison_type,contest.semantic_correct_threshold||0.7);
               const ok=f.comparison_type==="semantic"?sc2>=(contest.semantic_correct_threshold||0.7):f.comparison_type==="multiselect"||f.comparison_type==="list"?sc2>=0.99:sc2===1;
@@ -2993,6 +3063,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               {isSub&&contest.mode==="practice"&&<span className="badge b-green">✓ Submitted</span>}
               {isSub&&contest.mode==="assessment"&&<span className="badge b-blue">Saved</span>}
             </div>
+            {contest.deferred_scoring&&<div className="xs m3" style={{marginBottom:12}}>Scores for this contest are updated within a day of submission. Validate shows the correct answers, not scores.</div>}
             {inlineMixed.length===0&&cure.length===0&&annotate.length===0&&<div className="sm m3">No curate fields configured for this item.</div>}
             <div style={{display:"flex",flexDirection:"column",gap:14}}>
               {(inlineCtx.length>0||annotate.length>0?inlineMixed:[...cure]).map(f=>(
