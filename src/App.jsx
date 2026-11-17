@@ -2119,15 +2119,13 @@ function UserProfile({ user, showToast }) {
 
 
 // ── CURATE FIELD — local state only, DB saves happen on navigate ─
-// Every paragraph box is the same size: 30 rows is room for a 450-word answer. It also grows with the text, so a longer
-// answer or a narrower screen never needs an inner scrollbar.
-const PARAGRAPH_ROWS=30;
+// Every paragraph box is the same size: a fixed height of this many rows. A longer answer scrolls inside the box
+// (scrollbar on the right) instead of making the box taller.
+const PARAGRAPH_ROWS=10;
 const isVideoUrl=u=>/\.(mp4|webm|mov|m4v|ogv)(\?|#|$)/i.test(String(u||""));   // video links, so an image-role field that holds a video still plays
 function CurateField({ fieldDef, initialValue, disabled, onSave }) {
   const multiline = fieldDef.input_type==="paragraph";   // a "paragraph" field gets a large multi-line box
   const [val, setVal] = useState(initialValue||"");
-  const taRef=useRef(null);
-  useEffect(()=>{ const el=taRef.current; if (multiline&&el&&el.scrollHeight>0) { el.style.height="auto"; el.style.height=el.scrollHeight+"px"; } },[multiline,val]);
 
   useEffect(()=>{ setVal(initialValue||""); }, [initialValue]);
 
@@ -2187,7 +2185,7 @@ function CurateField({ fieldDef, initialValue, disabled, onSave }) {
         <input type="number" value={val} disabled={disabled} onChange={e=>handleChange(e.target.value)}/>
       ) : multiline ? (
         <>
-          <textarea ref={taRef} value={val} disabled={disabled} rows={PARAGRAPH_ROWS} style={{width:"100%",resize:"vertical",lineHeight:1.5,overflowY:"auto"}}
+          <textarea value={val} disabled={disabled} rows={PARAGRAPH_ROWS} style={{width:"100%",resize:"vertical",lineHeight:1.5,overflowY:"auto"}}
             placeholder={`Write the ${fieldDef.field_name.toLowerCase()} in your own words...`}
             onChange={e=>handleChange(e.target.value)}/>
           <div className="xs m3" style={{marginTop:2,textAlign:"right"}}>{(val.trim()?val.trim().split(/\s+/).length:0)} words</div>
