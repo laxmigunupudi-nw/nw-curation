@@ -2963,7 +2963,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               {vids.map(f=>{
                 const url=urlOf(f);
                 return url?(
-                  <div key={f.field_name} style={{marginBottom:10}}>
+                  <div key={`${cur.id}|${f.field_name}|${url}`} style={{marginBottom:10}}>
                     <video src={url} controls preload="metadata" playsInline
                       style={{width:"100%",maxWidth:760,maxHeight:"60vh",borderRadius:8,background:"#000",display:"block"}}
                       onError={e=>{ e.target.style.display="none"; const n=e.target.nextSibling; if (n) n.style.display="block"; }}/>
@@ -2979,7 +2979,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               {imgs.slice(0,6).map(f=>{
                 const url=di?.json_value?.[f.field_name];
                 const fullUrl = url ? url.replace(/[?&](odnHeight|odnWidth|odnBg)=[^&]*/g,"").replace(/[?&]$/,"") : null;
-                return url?<img key={f.field_name} src={url} alt="" loading="lazy" className="imt"
+                return url?<img key={`${cur.id}|${f.field_name}|${url}`} src={url} alt="" className="imt"
                   style={{cursor:"pointer"}}
                   onClick={()=>window.open(fullUrl,"_blank")}
                   onMouseEnter={e=>e.target.style.opacity=".8"}
