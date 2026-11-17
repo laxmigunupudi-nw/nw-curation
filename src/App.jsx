@@ -2122,6 +2122,28 @@ function UserProfile({ user, showToast }) {
 // Every paragraph box is the same size: a fixed height of this many rows. A longer answer scrolls inside the box
 // (scrollbar on the right) instead of making the box taller.
 const PARAGRAPH_ROWS=10;
+// One task image. Shows a "Loading image…" box until it has arrived (large files can take a while), a message if it fails,
+// and tells the parent when it is done so the next question's image is only fetched afterwards.
+function TaskImage({ url, fullUrl, onDone }) {
+  const [st,setSt]=useState("loading");   // loading | ready | failed
+  return (
+    <div style={{display:"inline-block"}}>
+      {st==="loading"&&(
+        <div className="imt sm m3" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,minWidth:200,minHeight:140,background:"rgba(127,127,127,.08)",border:"1px dashed var(--border)",borderRadius:8,padding:12}}>
+          <span className="sp"/>Loading image…
+        </div>
+      )}
+      {st==="failed"&&(
+        <div className="xs" style={{color:"var(--red)",padding:8}}>Could not load this image. <a href={fullUrl||url} target="_blank" rel="noreferrer">Open it in a new tab</a>.</div>
+      )}
+      <img src={url} alt="" className="imt" decoding="async"
+        style={{cursor:"pointer",display:st==="ready"?"block":"none"}}
+        onClick={()=>window.open(fullUrl,"_blank")}
+        onMouseEnter={e=>e.target.style.opacity=".8"} onMouseLeave={e=>e.target.style.opacity="1"}
+        onLoad={()=>{ setSt("ready"); onDone&&onDone(); }} onError={()=>{ setSt("failed"); onDone&&onDone(); }}/>
+    </div>
+  );
+}
 const isVideoUrl=u=>/\.(mp4|webm|mov|m4v|ogv)(\?|#|$)/i.test(String(u||""));   // video links, so an image-role field that holds a video still plays
 function CurateField({ fieldDef, initialValue, disabled, onSave }) {
   const multiline = fieldDef.input_type==="paragraph";   // a "paragraph" field gets a large multi-line box
@@ -2207,6 +2229,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const [tasks,setTasks]=useState({});
   const [fields,setFields]=useState({});
   const [idx,setIdx]=useState(0);
+  const [imgDone,setImgDone]=useState({id:null,n:0});   // how many of the current question's images have finished loading
+  const preRef=useRef({});                            // images preloaded for the neighbouring questions, kept for the session
   const [saveStatus,setSaveStatus]=useState('idle'); // idle|saving|saved|failed
   const isSaving = useRef(false);
   const practiceAnswersRef = useRef({}); // stores answers at validate time — avoids async state issue
@@ -2223,15 +2247,20 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const creatingTask = useRef({});
 
   useEffect(()=>{ loadC(); },[]);
-  useEffect(()=>{   // warm the browser cache with the next and previous questions' images
+  useEffect(()=>{   // warm the browser cache with the next and previous questions' images, but only once this question's own images have loaded
     if (typeof Image==="undefined") return;
+    const here=items[idx]; if (!here) return;
+    const isImg=(it,f)=>f.field_role==="image"&&it.domain_items?.json_value?.[f.field_name]&&!isVideoUrl(it.domain_items.json_value[f.field_name]);
+    const need=(fields[here.domain_items?.domain_id]||[]).filter(f=>isImg(here,f)).length;
+    if (need>0&&!(imgDone.id===here.id&&imgDone.n>=need)) return;      // wait: the image you are looking at gets all the bandwidth first
     [idx+1,idx-1].forEach(j=>{
       const it=items[j]; if (!it) return;
-      (fields[it.domain_items?.domain_id]||[]).filter(f=>f.field_role==="image").forEach(f=>{
-        const u=it.domain_items?.json_value?.[f.field_name]; if (u&&!isVideoUrl(u)) { const im=new Image(); im.src=u; }
+      (fields[it.domain_items?.domain_id]||[]).filter(f=>isImg(it,f)).forEach(f=>{
+        const u=it.domain_items.json_value[f.field_name]; if (preRef.current[u]) return;
+        const im=new Image(); try { im.fetchPriority="low"; } catch(e) {} im.src=u; preRef.current[u]=im;
       });
     });
-  },[idx,items,fields]);
+  },[idx,items,fields,imgDone]);
 
   // Realtime + polling: watch for contest close
   useEffect(()=>{
@@ -2988,12 +3017,8 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
               {imgs.slice(0,6).map(f=>{
                 const url=di?.json_value?.[f.field_name];
                 const fullUrl = url ? url.replace(/[?&](odnHeight|odnWidth|odnBg)=[^&]*/g,"").replace(/[?&]$/,"") : null;
-                return url?<img key={`${cur.id}|${f.field_name}|${url}`} src={url} alt="" className="imt"
-                  style={{cursor:"pointer"}}
-                  onClick={()=>window.open(fullUrl,"_blank")}
-                  onMouseEnter={e=>e.target.style.opacity=".8"}
-                  onMouseLeave={e=>e.target.style.opacity="1"}
-                  onError={e=>e.target.style.display="none"}/>:null;
+                return url?<TaskImage key={`${cur.id}|${f.field_name}|${url}`} url={url} fullUrl={fullUrl}
+                  onDone={()=>setImgDone(d=>d.id===cur.id?{id:cur.id,n:d.n+1}:{id:cur.id,n:1})}/>:null;
               })}
             </div>
           )}
