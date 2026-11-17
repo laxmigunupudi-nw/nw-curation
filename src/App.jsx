@@ -213,10 +213,18 @@ async function assignShuffledItems(contestId, userIds) {
   }
 }
 
+// <<TIME-START>>
+// Contest times are typed and shown in IST. They are stored in the database as exact moments (UTC), so a contest closes
+// at the time that was typed whatever the browser's or server's time zone. India has no daylight saving, so +05:30 is exact.
+const APP_TZ="Asia/Kolkata", APP_TZ_OFFSET="+05:30";
 function fmt(d) {
   if (!d) return "—";
-  return new Date(d).toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"});
+  return new Date(d).toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short",timeZone:APP_TZ});
 }
+const fmtIST=d=>d?`${fmt(d)} IST`:"";
+const istToUtc=v=>{ if (!v) return null; try { return new Date(`${v.length===16?v+":00":v}${APP_TZ_OFFSET}`).toISOString(); } catch(e) { return null; } };   // "2026-11-20T14:30" typed in IST -> exact moment
+const utcToIstInput=v=>v?new Date(v).toLocaleString("sv-SE",{timeZone:APP_TZ}).replace(" ","T").slice(0,16):"";                                          // stored moment -> datetime-local text, in IST
+// <<TIME-END>>
 
 function useToast() {
   const [t, st] = useState(null);
@@ -1304,7 +1312,6 @@ function AdminContests({ showToast }) {
 
 // ── CLONE CONTEST ────────────────────────────────────────────
 // Copies a contest's settings, domains and tasks into a new DRAFT contest. Users, progress and results are never copied.
-const toInputDT=v=>v?String(v).replace(" ","T").slice(0,16):"";   // stored timestamp -> datetime-local text (same convention as Create)
 const isPast=v=>!!v&&new Date(v)<=new Date();
 function pickRandom(arr,n){ const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a.slice(0,n); }
 
@@ -1318,7 +1325,7 @@ function CloneContestModal({ contests, source, uid, onClose, onDone }) {
   useEffect(()=>{ // pre-fill from the chosen contest; dates that have already passed are not carried over
     if (!src) return;
     if (!nameTouched) setName(`${src.name} (copy)`);
-    setSa(isPast(src.start_at)?"":toInputDT(src.start_at)); setEa(isPast(src.end_at)?"":toInputDT(src.end_at));
+    setSa(isPast(src.start_at)?"":utcToIstInput(src.start_at)); setEa(isPast(src.end_at)?"":utcToIstInput(src.end_at));
     setFresh(false);
   },[srcId]);
 
@@ -1334,7 +1341,7 @@ function CloneContestModal({ contests, source, uid, onClose, onDone }) {
         ...(o.shuffle?{shuffle:true}:{}),
         ...(o.deferred_scoring?{deferred_scoring:true}:{}),
         name:nm,mode:o.mode,task_count:o.task_count,
-        start_at:sa||null,end_at:ea||null,
+        start_at:istToUtc(sa),end_at:istToUtc(ea),
         l0_threshold:o.l0_threshold,l1_threshold:o.l1_threshold,l2_threshold:o.l2_threshold,
         semantic_correct_threshold:o.semantic_correct_threshold,
         status:"draft",created_by:uid,
@@ -1401,8 +1408,8 @@ function CloneContestModal({ contests, source, uid, onClose, onDone }) {
             </div>
           )}
           <div className="row2">
-            <div className="fg"><label className="fl">Start time (optional)</label><input type="datetime-local" value={sa} onChange={e=>setSa(e.target.value)}/></div>
-            <div className="fg"><label className="fl">End time (optional)</label><input type="datetime-local" value={ea} onChange={e=>setEa(e.target.value)}/></div>
+            <div className="fg"><label className="fl">Start time (optional, IST — a reminder only; you still press Activate)</label><input type="datetime-local" value={sa} onChange={e=>setSa(e.target.value)}/></div>
+            <div className="fg"><label className="fl">End time (optional, IST — the contest closes automatically)</label><input type="datetime-local" value={ea} onChange={e=>setEa(e.target.value)}/></div>
           </div>
           {droppedDates&&<div className="xs" style={{color:"var(--amber)",marginTop:-6,marginBottom:10}}>Dates that have already passed were not copied.</div>}
           {src&&!src.shuffle&&(
@@ -1458,7 +1465,7 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
         ...(shuffle?{shuffle:true}:{}),
         ...(deferred?{deferred_scoring:true}:{}),
         name:name.trim(),mode,task_count:parseInt(tc),
-        start_at:sa||null,end_at:ea||null,
+        start_at:istToUtc(sa),end_at:istToUtc(ea),
         l0_threshold:l0,l1_threshold:l1,l2_threshold:l2,
         semantic_correct_threshold:st,
         status:"draft",created_by:uid,
@@ -1516,8 +1523,8 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
           </div>
           <div className="row3">
             <div className="fg"><label className="fl">Total tasks *</label><input type="number" min={1} max={200} value={tc} onChange={e=>setTc(e.target.value)} required/></div>
-            <div className="fg"><label className="fl">Start time (optional)</label><input type="datetime-local" value={sa} onChange={e=>setSa(e.target.value)}/></div>
-            <div className="fg"><label className="fl">End time (optional)</label><input type="datetime-local" value={ea} onChange={e=>setEa(e.target.value)}/></div>
+            <div className="fg"><label className="fl">Start time (optional, IST — a reminder only; you still press Activate)</label><input type="datetime-local" value={sa} onChange={e=>setSa(e.target.value)}/></div>
+            <div className="fg"><label className="fl">End time (optional, IST — the contest closes automatically)</label><input type="datetime-local" value={ea} onChange={e=>setEa(e.target.value)}/></div>
           </div>
 
           <div style={{marginBottom:16}}>
@@ -2080,7 +2087,7 @@ function ContestCard({ contest, onOpen }) {
       </div>
       <div className="fw6" style={{marginBottom:4,fontSize:15}}>{contest.name}</div>
       <div className="xs m3" style={{marginBottom:12}}>{contest.contest_domains?.map(cd=>cd.domains?.name).filter(Boolean).join(", ")} · {contest.task_count} tasks</div>
-      {contest.end_at&&<div className="xs m2" style={{marginBottom:10}}>Ends: {fmt(contest.end_at)}</div>}
+      {contest.end_at&&<div className="xs m2" style={{marginBottom:10}}>Ends: {fmtIST(contest.end_at)}</div>}
       <div className="pb" style={{marginBottom:6}}><div className="pf" style={{width:`${pct}%`}}/></div>
       <div className="xs m3">{p?.submitted||0} / {contest.task_count} submitted</div>
     </div>
@@ -2247,6 +2254,11 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const creatingTask = useRef({});
 
   useEffect(()=>{ loadC(); },[]);
+  useEffect(()=>{   // a contest with an end time is re-checked every 30 s, so anyone still working is submitted shortly after it closes
+    if (!contest.end_at||contest.status!=="active") return;
+    const t=setInterval(()=>{ checkContestOpen(); },30000);
+    return ()=>clearInterval(t);
+  },[contest.id]);
   useEffect(()=>{   // warm the browser cache with the next and previous questions' images, but only once this question's own images have loaded
     if (typeof Image==="undefined") return;
     const here=items[idx]; if (!here) return;
