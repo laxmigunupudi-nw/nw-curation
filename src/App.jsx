@@ -2117,7 +2117,7 @@ function ContestCard({ contest, onOpen }) {
       {contest.status==="draft"&&contest.start_at&&<div className="xs m2" style={{marginBottom:6}}>Starts: {fmtIST(contest.start_at)} (opens automatically)</div>}
       {contest.end_at&&<div className="xs m2" style={{marginBottom:10}}>Ends: {fmtIST(contest.end_at)}</div>}
       <div className="pb" style={{marginBottom:6}}><div className="pf" style={{width:`${pct}%`}}/></div>
-      <div className="xs m3">{p?.submitted||0} / {contest.task_count} submitted</div>
+      <div className="xs m3">{p?.submitted||0} / {contest.task_count} {contest.mode==="practice"?"completed":"submitted"}</div>
     </div>
   );
 }
@@ -2321,7 +2321,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
         if (payload.new.status==="closed" && !closingRef.current) {
           closingRef.current = true;
           setContestClosed(true);
-          await autoSubmitAll();
+          if (contest.mode!=="practice") await autoSubmitAll();   // in practice a task is complete only when the person clicked Validate
         }
       })
       .subscribe();
@@ -2515,7 +2515,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
     if (c?.status==="closed") {
       closingRef.current = true;
       setContestClosed(true);
-      await autoSubmitAll();
+      if (contest.mode!=="practice") await autoSubmitAll();   // in practice a task is complete only when the person clicked Validate
       return false;
     }
     return true;
@@ -2868,7 +2868,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       <div className="card" style={{maxWidth:500,textAlign:"center",padding:44,boxShadow:"var(--shadow2)"}}>
         <div style={{fontSize:48,marginBottom:16}}>📋</div>
         <div className="fw6" style={{fontSize:22,marginBottom:6}}>Contest has ended</div>
-        <div className="sm m2" style={{marginBottom:24}}>Your answers have been automatically saved and submitted.{contest.deferred_scoring&&" Your scores will be updated within a day."}</div>
+        <div className="sm m2" style={{marginBottom:24}}>{contest.mode==="practice"?"Tasks you validated before it ended count as complete.":"Your answers have been automatically saved and submitted."}{contest.deferred_scoring&&" Your scores will be updated within a day."}</div>
         {score&&contest.mode==="assessment"&&!contest.deferred_scoring&&(<>
           <div className="g3c" style={{marginBottom:24}}>
             {[{v:score.tasks_submitted,l:"Tasks done"},{v:`${score.correct_attributes}/${score.total_attributes}`,l:"Correct"},{v:`${score.accuracy_pct}%`,l:"Accuracy"}].map(x=>(
@@ -2959,7 +2959,11 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const inlineCtx=af.filter(f=>f.field_role==="inline_context");
   const inlineMixed=[...cure,...annotate,...inlineCtx].sort((a,b)=>(a.display_order||0)-(b.display_order||0));
 
-  function tSt(item) { const t=tasks[item.id]; if(!t)return"ns"; if(t.status==="submitted")return"sb"; return"ip"; }
+  function tSt(item) {
+    const t=tasks[item.id]; if(!t)return"ns"; if(t.status==="submitted")return"sb";
+    if (contest.mode==="practice") return t.status==="in_progress"?"ip":"ns";   // practice: pre-created tasks that nobody has touched are Not started
+    return"ip";
+  }
   const inc=items.filter(i=>!tasks[i.id]||tasks[i.id].status!=="submitted").length;
 
   return (
@@ -2985,7 +2989,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
           })}
         </div>
         <div style={{marginTop:16,padding:"0 6px"}}>
-          {[["ns","Not started"],["ip","In progress"],["sb","Submitted"]].map(([st,lbl])=>(
+          {[["ns","Not started"],["ip","In progress"],["sb",contest.mode==="practice"?"Completed (validated)":"Submitted"]].map(([st,lbl])=>(
             <div key={st} className="fx g2 ac xs m3" style={{marginBottom:5}}>
               <div className={`td td-${st}`} style={{width:12,height:12,fontSize:0}}/>
               {lbl}
