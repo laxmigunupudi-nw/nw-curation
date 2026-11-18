@@ -1710,7 +1710,7 @@ function AdminProgress() {
   const [load,setLoad]=useState(false); const [tab,setTab]=useState("users");
 
   useEffect(()=>{
-    sb.from("contests").select("id,name,mode,status").order("created_at",{ascending:false}).then(({data})=>setContests(data||[]));
+    sb.from("contests").select("*").order("created_at",{ascending:false}).then(({data})=>setContests(data||[]));
   },[]);
 
   useEffect(()=>{
@@ -1800,10 +1800,25 @@ function AdminProgress() {
 
         setProgress(enriched); setFa(f||[]);
       } else {
-        const {data:p,error:pe}=await sb.from("v_practice_progress").select("*").eq("contest_id",sel);
-        if(pe) console.error("Practice progress error:",pe.message);
-        const enriched = (p||[]).map(row=>({...row, users: userMap[row.user_id]||null}));
-        setProgress(enriched); setFa([]);
+        const {data:rp,error:re}=await sb.rpc("contest_progress",{p_contest:sel});   // admin-only database function: tasks, status, accuracy, last activity
+        if (!re&&Array.isArray(rp)) {
+          const enriched=rp.map(r=>{
+            const total=r.tasks_total||con?.task_count||0, sub=r.tasks_submitted||0, inp=r.tasks_in_progress||0;
+            return {user_id:r.user_id, users:userMap[r.user_id]||null, full:true,
+              tasks_submitted:sub, tasks_total:total, tasks_done:sub,   // for practice, "done" means validated
+              total_attributes:r.total_attributes||0, correct_attributes:r.correct_attributes||0, accuracy_pct:r.accuracy_pct, last_activity:r.last_activity,
+              user_status: total>0&&sub>=total?"submitted":(sub+inp>0?"in_progress":"not_started")};
+          });
+          const ord={submitted:0,in_progress:1,not_started:2};
+          enriched.sort((a,b)=>ord[a.user_status]!==ord[b.user_status]?ord[a.user_status]-ord[b.user_status]:(Number(b.accuracy_pct)||0)-(Number(a.accuracy_pct)||0));
+          setProgress(enriched); setFa([]);
+        } else {
+          // the function is not installed yet: show what the old view gives
+          const {data:p,error:pe}=await sb.from("v_practice_progress").select("*").eq("contest_id",sel);
+          if(pe) console.error("Practice progress error:",pe.message);
+          const enriched = (p||[]).map(row=>({...row, users: userMap[row.user_id]||null}));
+          setProgress(enriched); setFa([]);
+        }
       }
     } catch(e) { console.error("loadP exception:",e); }
     setLoad(false);
@@ -1827,6 +1842,11 @@ function AdminProgress() {
       ]);
       csv = [headers, ...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
       filename = `${con.name}_results.csv`;
+    } else if (progress.some(p=>p.full)) {
+      const headers = ["Name","Email","Status","Tasks Done","Total Tasks","Total Attributes","Correct Attributes","Accuracy %","Last Activity (IST)"];
+      const rows = progress.map(p=>[p.users?.full_name||"",p.users?.email||"",p.user_status||"",p.tasks_submitted||0,p.tasks_total||0,p.total_attributes||0,p.correct_attributes||0,p.accuracy_pct??"",p.last_activity?fmt(p.last_activity):""]);
+      csv = [headers, ...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+      filename = `${con.name}_practice_progress.csv`;
     } else {
       const headers = ["Name","Email","Tasks Completed","Total Tasks"];
       const rows = progress.map(p=>[
@@ -1847,6 +1867,8 @@ function AdminProgress() {
 
 
   const con=contests.find(c=>c.id===sel);
+  const detailed=con?.mode==="assessment"||progress.some(p=>p.full);   // show accuracy columns (assessments always; practice when the database function answered)
+  const showCert=con?.mode==="assessment";
 
   return (
     <div>
@@ -1880,6 +1902,7 @@ function AdminProgress() {
               </button>
             )}
           </div>
+          {con?.deferred_scoring&&<div className="xs m3" style={{marginBottom:8}}>Scores for this contest are provisional until you update them in the database.</div>}
           {load ? <div style={{textAlign:"center",padding:40}}><span className="sp"/></div> : (
             <>
               {(tab==="users"||con?.mode==="practice")&&(
@@ -1888,7 +1911,7 @@ function AdminProgress() {
                     <thead><tr>
                       <th>User</th>
                       <th>Tasks done</th>
-                      {con?.mode==="assessment"&&<><th>Total attrs</th><th>Correct</th><th>Accuracy</th><th>Cert</th></>}
+                      {detailed&&<><th>Total attrs</th><th>Correct</th><th>Accuracy</th>{showCert?<th>Cert</th>:<th>Last activity (IST)</th>}</>}
                     </tr></thead>
                     <tbody>
                       {progress.length===0&&<tr><td colSpan={7} style={{textAlign:"center",color:"var(--text3)",padding:24}}>No data yet</td></tr>}
@@ -1896,16 +1919,16 @@ function AdminProgress() {
                         <tr key={i} style={{opacity:p.user_status==='not_started'?0.5:1}}>
                           <td className="fw5">
                             <div>{p.users?.full_name||p.users?.email||"—"}</div>
-                            {con?.mode==="assessment"&&(
+                            {(con?.mode==="assessment"||p.full)&&(
                               <div style={{fontSize:11,marginTop:2}}>
-                                {p.user_status==='submitted'&&<span style={{color:'var(--green)'}}>✓ Submitted</span>}
-                                {p.user_status==='in_progress'&&<span style={{color:'var(--amber)'}}>⟳ In progress ({p.tasks_done}/24)</span>}
+                                {p.user_status==='submitted'&&<span style={{color:'var(--green)'}}>{p.full?"✓ Completed":"✓ Submitted"}</span>}
+                                {p.user_status==='in_progress'&&<span style={{color:'var(--amber)'}}>⟳ In progress ({p.tasks_done}/{p.tasks_total||con?.task_count||"?"})</span>}
                                 {p.user_status==='not_started'&&<span style={{color:'var(--text3)'}}>— Not started</span>}
                               </div>
                             )}
                           </td>
-                          <td>{p.tasks_submitted||p.tasks_completed||0}</td>
-                          {con?.mode==="assessment"&&<>
+                          <td>{p.full?`${p.tasks_submitted} / ${p.tasks_total}`:(p.tasks_submitted||p.tasks_completed||0)}</td>
+                          {detailed&&<>
                             <td>{p.total_attributes||"—"}</td>
                             <td>{p.correct_attributes||"—"}</td>
                             <td>
@@ -1918,11 +1941,15 @@ function AdminProgress() {
                                 </div>
                               ):<span style={{color:'var(--text3)',fontSize:12}}>—</span>}
                             </td>
-                            <td>
-                              {p.cert_level
-                                ? <span className={`badge cert-${p.cert_level?.toLowerCase()}`}>{p.cert_level}</span>
-                                : <span style={{color:'var(--text3)',fontSize:12}}>—</span>}
-                            </td>
+                            {showCert?(
+                              <td>
+                                {p.cert_level
+                                  ? <span className={`badge cert-${p.cert_level?.toLowerCase()}`}>{p.cert_level}</span>
+                                  : <span style={{color:'var(--text3)',fontSize:12}}>—</span>}
+                              </td>
+                            ):(
+                              <td className="xs m3">{p.last_activity?fmt(p.last_activity):"—"}</td>
+                            )}
                           </>}
                         </tr>
                       ))}
