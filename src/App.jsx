@@ -1178,6 +1178,14 @@ function AdminContests({ showToast }) {
 
   async function toggleStatus(c) {
     const next = c.status==="active"?"closed":c.status==="draft"?"active":"active";
+    if (next==="active") {
+      // One atomic database call: it creates every task and only then turns the contest on, so it is fast for any number of people
+      // and nobody can open the contest while tasks are still missing.
+      const {data:made,error:ae}=await sb.rpc("activate_contest",{p_contest:c.id});
+      if (!ae) { showToast(`Contest activated — ${made} tasks pre-created`); load2(); return; }
+      if (!/could not find the function|does not exist|schema cache/i.test(ae.message||"")) { showToast("Could not activate: "+ae.message,"error"); return; }
+      // the database function is not installed yet: carry on with the older browser-side way below
+    }
     const {error} = await sb.from("contests").update({status:next}).eq("id",c.id);
     if (error) { showToast("Update failed: "+error.message,"error"); return; }
 
@@ -1226,36 +1234,14 @@ function AdminContests({ showToast }) {
       }
       showToast(`Contest activated — ${taskRows.length} tasks pre-created`);
     } else if (next==="closed") {
-      // Auto-fix: submit all tasks that have responses but are not yet submitted
-      const {data:tasksWithResponses} = await sb
-        .from("tasks")
-        .select("id,user_id")
-        .eq("contest_id",c.id)
-        .neq("status","submitted");
-      
-      if (tasksWithResponses && tasksWithResponses.length > 0) {
-        // Find which of these tasks have at least one response
-        const taskIds = tasksWithResponses.map(t=>t.id);
-        const {data:responseTasks} = await sb
-          .from("responses")
-          .select("task_id")
-          .in("task_id",taskIds);
-        
-        const taskIdsWithResponses = [...new Set((responseTasks||[]).map(r=>r.task_id))];
-        
-        if (taskIdsWithResponses.length > 0) {
-          const now = new Date().toISOString();
-          const batchSize = 50;
-          for (let i=0; i<taskIdsWithResponses.length; i+=batchSize) {
-            const batch = taskIdsWithResponses.slice(i,i+batchSize);
-            await sb.from("tasks")
-              .update({status:"submitted", submitted_at:now})
-              .in("id",batch);
-          }
-          console.log(`Auto-submitted ${taskIdsWithResponses.length} tasks with responses on contest close`);
-        }
+      // The database submits every unfinished task of a closed ASSESSMENT contest and locks the drafts, in one set-based step (so it works
+      // for any number of people; the old browser loop stopped at 1,000 rows). Practice tasks are complete only when validated: nothing is submitted.
+      let closeNote="";
+      if (c.mode==="assessment") {
+        const {error:ce}=await sb.rpc("close_expired_contests");
+        if (ce) closeNote=" — but unfinished tasks could not be submitted yet: "+ce.message;
       }
-      showToast(`Contest closed`);
+      showToast(`Contest closed${closeNote}`, closeNote?"error":"success");
     } else {
       showToast(`Contest ${next}`);
     }
@@ -2025,7 +2011,14 @@ function UserShell({ user, onLogout }) {
 function UserContests({ user, onOpen }) {
   const [live,setLive]=useState([]); const [past,setPast]=useState([]); const [load,setLoad]=useState(true); const [tab,setTab]=useState("live");
 
-  useEffect(()=>{ load2(); const t=setInterval(()=>load2(true),60000); return ()=>clearInterval(t); },[]);   // refresh quietly every minute, so a contest that opens on schedule shows up
+  useEffect(()=>{ load2(); },[]);
+  const waiting=live.some(c=>c.status==="draft");
+  useEffect(()=>{   // only while a contest is waiting to start: refresh quietly about once a minute, spread out so that thousands of people do not ask in the same second
+    if (!waiting) return;
+    let stop=false, timer;
+    const tick=()=>{ timer=setTimeout(async()=>{ if(stop) return; await load2(true); if(!stop) tick(); },50000+Math.random()*20000); };
+    tick(); return ()=>{ stop=true; clearTimeout(timer); };
+  },[waiting]);
 
   async function load2(silent) {
     if (!silent) setLoad(true);
@@ -2288,18 +2281,23 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const creatingTask = useRef({});
 
   useEffect(()=>{ loadC(); },[]);
-  useEffect(()=>{   // a contest that has not started: check every 15 s, and send the person back to their list (where it now shows as live) the moment it opens
+  useEffect(()=>{   // a contest that has not started: check every 20-30 s, and send the person back to their list (where it now shows as live) the moment it opens
     if (contest.status!=="draft") return;
-    const t=setInterval(async()=>{
+    let stop=false, timer;
+    const tick=()=>{ timer=setTimeout(async()=>{
+      if (stop) return;
       const {data:c}=await sb.from("contests").select("status").eq("id",contest.id).single();
-      if (c&&c.status!=="draft") { showToast&&showToast("The contest has started — open it from your list"); onClose&&onClose(); }
-    },15000);
-    return ()=>clearInterval(t);
+      if (c&&c.status!=="draft") { showToast&&showToast("The contest has started — open it from your list"); onClose&&onClose(); return; }
+      if (!stop) tick();
+    },20000+Math.random()*10000); };   // every 20-30 s, spread out
+    tick();
+    return ()=>{ stop=true; clearTimeout(timer); };
   },[contest.id,contest.status]);
-  useEffect(()=>{   // a contest with an end time is re-checked every 30 s, so anyone still working is submitted shortly after it closes
+  useEffect(()=>{   // a contest with an end time is re-checked about every 30 s (25-35 s, so people drift apart), so anyone still working is submitted shortly after it closes
     if (!contest.end_at||contest.status!=="active") return;
-    const t=setInterval(()=>{ checkContestOpen(); },30000);
-    return ()=>clearInterval(t);
+    let stop=false, timer;
+    const tick=()=>{ timer=setTimeout(async()=>{ if(stop) return; await checkContestOpen(); if(!stop) tick(); },25000+Math.random()*10000); };
+    tick(); return ()=>{ stop=true; clearTimeout(timer); };
   },[contest.id]);
   useEffect(()=>{   // warm the browser cache with the next and previous questions' images, but only once this question's own images have loaded
     if (typeof Image==="undefined") return;
