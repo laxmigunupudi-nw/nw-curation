@@ -1286,7 +1286,7 @@ function AdminContests({ showToast }) {
                   <td className="xs">{c.contest_domains?.map(cd=>cd.domains?.name).filter(Boolean).join(", ")||"—"}</td>
                   <td>{c.task_count}</td>
                   <td>{c.contest_users?.[0]?.count||0}</td>
-                  <td><span className={`badge b-${sc[c.status]||"gray"}`}>{c.status}</span></td>
+                  <td><span className={`badge b-${sc[c.status]||"gray"}`}>{c.status}</span>{c.status==="draft"&&c.start_at&&<div className="xs m3" style={{marginTop:4}}>opens {fmtIST(c.start_at)}</div>}{c.status==="active"&&c.end_at&&<div className="xs m3" style={{marginTop:4}}>closes {fmtIST(c.end_at)}</div>}</td>
                   <td>
                     <div className="fx g2">
                       <button className="bg bxs" onClick={()=>setShowAssign(c)}>Users</button>
@@ -1408,7 +1408,7 @@ function CloneContestModal({ contests, source, uid, onClose, onDone }) {
             </div>
           )}
           <div className="row2">
-            <div className="fg"><label className="fl">Start time (optional, IST — a reminder only; you still press Activate)</label><input type="datetime-local" value={sa} onChange={e=>setSa(e.target.value)}/></div>
+            <div className="fg"><label className="fl">Start time (optional, IST — the contest opens automatically at this time)</label><input type="datetime-local" value={sa} onChange={e=>setSa(e.target.value)}/></div>
             <div className="fg"><label className="fl">End time (optional, IST — the contest closes automatically)</label><input type="datetime-local" value={ea} onChange={e=>setEa(e.target.value)}/></div>
           </div>
           {droppedDates&&<div className="xs" style={{color:"var(--amber)",marginTop:-6,marginBottom:10}}>Dates that have already passed were not copied.</div>}
@@ -1523,7 +1523,7 @@ function CreateContestModal({ domains, users, uid, onClose, onDone }) {
           </div>
           <div className="row3">
             <div className="fg"><label className="fl">Total tasks *</label><input type="number" min={1} max={200} value={tc} onChange={e=>setTc(e.target.value)} required/></div>
-            <div className="fg"><label className="fl">Start time (optional, IST — a reminder only; you still press Activate)</label><input type="datetime-local" value={sa} onChange={e=>setSa(e.target.value)}/></div>
+            <div className="fg"><label className="fl">Start time (optional, IST — the contest opens automatically at this time)</label><input type="datetime-local" value={sa} onChange={e=>setSa(e.target.value)}/></div>
             <div className="fg"><label className="fl">End time (optional, IST — the contest closes automatically)</label><input type="datetime-local" value={ea} onChange={e=>setEa(e.target.value)}/></div>
           </div>
 
@@ -1992,10 +1992,10 @@ function UserShell({ user, onLogout }) {
 function UserContests({ user, onOpen }) {
   const [live,setLive]=useState([]); const [past,setPast]=useState([]); const [load,setLoad]=useState(true); const [tab,setTab]=useState("live");
 
-  useEffect(()=>{load2();},[]);
+  useEffect(()=>{ load2(); const t=setInterval(()=>load2(true),60000); return ()=>clearInterval(t); },[]);   // refresh quietly every minute, so a contest that opens on schedule shows up
 
-  async function load2() {
-    setLoad(true);
+  async function load2(silent) {
+    if (!silent) setLoad(true);
     const {data:cu}=await sb.from("contest_users").select("contest_id").eq("user_id",user.id);
     if (!cu||!cu.length) { setLoad(false); return; }
     const ids=cu.map(r=>r.contest_id);
@@ -2087,6 +2087,7 @@ function ContestCard({ contest, onOpen }) {
       </div>
       <div className="fw6" style={{marginBottom:4,fontSize:15}}>{contest.name}</div>
       <div className="xs m3" style={{marginBottom:12}}>{contest.contest_domains?.map(cd=>cd.domains?.name).filter(Boolean).join(", ")} · {contest.task_count} tasks</div>
+      {contest.status==="draft"&&contest.start_at&&<div className="xs m2" style={{marginBottom:6}}>Starts: {fmtIST(contest.start_at)} (opens automatically)</div>}
       {contest.end_at&&<div className="xs m2" style={{marginBottom:10}}>Ends: {fmtIST(contest.end_at)}</div>}
       <div className="pb" style={{marginBottom:6}}><div className="pf" style={{width:`${pct}%`}}/></div>
       <div className="xs m3">{p?.submitted||0} / {contest.task_count} submitted</div>
@@ -2254,6 +2255,14 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
   const creatingTask = useRef({});
 
   useEffect(()=>{ loadC(); },[]);
+  useEffect(()=>{   // a contest that has not started: check every 15 s, and send the person back to their list (where it now shows as live) the moment it opens
+    if (contest.status!=="draft") return;
+    const t=setInterval(async()=>{
+      const {data:c}=await sb.from("contests").select("status").eq("id",contest.id).single();
+      if (c&&c.status!=="draft") { showToast&&showToast("The contest has started — open it from your list"); onClose&&onClose(); }
+    },15000);
+    return ()=>clearInterval(t);
+  },[contest.id,contest.status]);
   useEffect(()=>{   // a contest with an end time is re-checked every 30 s, so anyone still working is submitted shortly after it closes
     if (!contest.end_at||contest.status!=="active") return;
     const t=setInterval(()=>{ checkContestOpen(); },30000);
@@ -2820,7 +2829,7 @@ function ContestTaskView({ contest, user, onClose, showToast }) {
       <div className="card" style={{maxWidth:440,textAlign:"center",padding:40}}>
         <div style={{fontSize:36,marginBottom:16}}>⏳</div>
         <div className="fw6" style={{fontSize:20,marginBottom:8}}>Contest not yet started</div>
-        <div className="sm m2" style={{marginBottom:24}}>Your admin hasn't activated this contest yet. Please check back later.</div>
+        <div className="sm m2" style={{marginBottom:24}}>{contest.start_at?`This contest opens automatically on ${fmtIST(contest.start_at)}. You will be taken back to your contests list when it starts.`:"Your admin hasn't activated this contest yet. Please check back later."}</div>
         <button className="bg" onClick={onClose}>← Back to contests</button>
       </div>
     </div>
