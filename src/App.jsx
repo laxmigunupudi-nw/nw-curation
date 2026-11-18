@@ -126,8 +126,14 @@ const css = `
   .al-s{background:#f0faf6;color:var(--green);border:1.5px solid rgba(10,124,85,.3)}
   .al-i{background:#f0f5ff;color:var(--accent);border:1.5px solid rgba(59,111,245,.3)}
   .hc{padding:8px 12px;border-radius:8px;font-size:12px;text-align:center;font-weight:600;min-width:108px}
-  ::-webkit-scrollbar{width:5px;height:5px}
-  ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+  /* Scrollbars everywhere in the app. --sb is the thickness: change this one number to make every scrollbar thicker or thinner. */
+  :root{--sb:14px}
+  ::-webkit-scrollbar{width:var(--sb);height:var(--sb)}
+  ::-webkit-scrollbar-track{background:var(--bg3)}
+  ::-webkit-scrollbar-thumb{background:var(--text3);border-radius:10px;border:3px solid var(--bg3);min-height:40px;min-width:40px}
+  ::-webkit-scrollbar-thumb:hover{background:var(--text2)}
+  ::-webkit-scrollbar-corner{background:var(--bg3)}
+  @supports not selector(::-webkit-scrollbar){ *{scrollbar-width:auto;scrollbar-color:var(--text3) var(--bg3)} }   /* Firefox */
   select option{background:#fff;color:var(--text)}
   input[type=file]{padding:6px 11px;font-size:12px;background:var(--bg3)}
   input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
