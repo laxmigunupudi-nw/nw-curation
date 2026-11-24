@@ -6,3 +6,5 @@ dist/
 *.log
 *.zip
 .claude/settings.local.json
+# golden, answer and config files stay out of git
+*.xlsx
